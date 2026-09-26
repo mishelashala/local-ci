@@ -3,10 +3,10 @@ import { mkdirSync, rmSync } from 'node:fs'
 import { join } from 'node:path'
 import type { Readable } from 'node:stream'
 import { appendLog, claimNextRun, finishRun } from './db.ts'
+import { readBranchSha, readDevelopSha } from './git-repo.ts'
+import { bareRepo, workRoot } from './paths.ts'
 
 const SAMPLE_REPO = 'sample-app'
-const BARE_REPO = '/Users/michellayala/Desktop/ci-cd/ci/repos/sample-app.git'
-const WORK_ROOT = '/Users/michellayala/Desktop/ci-cd/scheduler/data/work'
 
 type ClaimedRun = NonNullable<ReturnType<typeof claimNextRun>>
 
@@ -59,7 +59,7 @@ function spawnLogged(runId: string, command: string, args: string[], cwd?: strin
 }
 
 async function execute(run: ClaimedRun) {
-  const workDir = join(WORK_ROOT, run.id)
+  const workDir = join(workRoot, run.id)
   const outcome: { status: 'passed' | 'failed'; exitCode: number | null } = {
     status: 'failed',
     exitCode: 1,
@@ -70,11 +70,11 @@ async function execute(run: ClaimedRun) {
       return
     }
 
-    mkdirSync(WORK_ROOT, { recursive: true })
+    mkdirSync(workRoot, { recursive: true })
     rmSync(workDir, { recursive: true, force: true })
     mkdirSync(workDir, { recursive: true })
 
-    const cloneCode = await spawnLogged(run.id, 'git', ['clone', '--local', BARE_REPO, workDir])
+    const cloneCode = await spawnLogged(run.id, 'git', ['clone', '--local', bareRepo, workDir])
     if (cloneCode !== 0) {
       appendLog(run.id, `error: git clone failed (${cloneCode ?? 'spawn error'})`)
       outcome.exitCode = cloneCode
@@ -121,7 +121,7 @@ export function startWorker() {
   let busy = false
   const tick = () => {
     if (busy) return
-    const run = claimNextRun()
+    const run = claimNextRun(readDevelopSha(bareRepo), readBranchSha(bareRepo, 'main'))
     if (run === undefined) return
     busy = true
     void execute(run).finally(() => {

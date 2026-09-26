@@ -14,6 +14,10 @@ export const runs = sqliteTable('runs', {
   startedAt: integer('started_at'),
   finishedAt: integer('finished_at'),
   exitCode: integer('exit_code'),
+  baseSha: text('base_sha'),
+  headSha: text('head_sha'),
+  candidateSha: text('candidate_sha'),
+  target: text('target'),
 })
 
 export const logs = sqliteTable('logs', {

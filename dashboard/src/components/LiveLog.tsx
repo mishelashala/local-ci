@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState } from 'react'
 import { Box, Typography } from '@mui/material'
+import { AnsiText } from '../ansi'
 import { formatAgo, formatDuration, mono } from '../format'
 import { Panel, Sha, StatusChip } from '../ui'
 
@@ -127,7 +128,7 @@ export function LiveLog({ runId }: { runId: string }) {
           )}
           {lines.map((line, index) => (
             <Box key={`${runId}-${index}`} sx={{ overflowWrap: 'anywhere', whiteSpace: 'pre-wrap' }}>
-              {line}
+              <AnsiText text={line} />
             </Box>
           ))}
         </Box>
