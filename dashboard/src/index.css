@@ -1,0 +1,33 @@
+html,
+body,
+#root {
+  height: 100%;
+  margin: 0;
+}
+
+body {
+  background: #0e1116;
+  color: #e6edf3;
+}
+
+@keyframes ci-pulse {
+  0% {
+    opacity: 1;
+  }
+  50% {
+    opacity: 0.35;
+  }
+  100% {
+    opacity: 1;
+  }
+}
+
+.ci-pulse {
+  animation: ci-pulse 1.4s ease-in-out infinite;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .ci-pulse {
+    animation: none;
+  }
+}

@@ -1,0 +1,17 @@
+#!/bin/sh
+# Notify the local scheduler. This hook does not build or test.
+repo=$(basename "$PWD" .git)
+url="http://127.0.0.1:3001/events"
+
+while read -r old new ref; do
+  payload=$(printf '{"repository":"%s","ref":"%s","oldSha":"%s","newSha":"%s"}' "$repo" "$ref" "$old" "$new")
+  if ! curl --silent --show-error --fail --max-time 3 \
+    -X POST "$url" \
+    -H 'content-type: application/json' \
+    -d "$payload"
+  then
+    echo "ci scheduler did not accept $ref" >&2
+    exit 1
+  fi
+  echo
+done

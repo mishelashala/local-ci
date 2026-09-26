@@ -1,0 +1,10 @@
+node_modules
+dist
+.DS_Store
+*.local
+
+# Local scheduler state and checkout workdirs
+scheduler/data
+
+# Bare repo created by scripts/setup-ci.sh
+ci/repos
