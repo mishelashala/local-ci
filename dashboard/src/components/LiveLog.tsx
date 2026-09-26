@@ -2,7 +2,7 @@ import { useEffect, useRef, useState } from 'react'
 import { Box, Typography } from '@mui/material'
 import { AnsiText } from '../ansi'
 import { formatAgo, formatDuration, mono } from '../format'
-import { Panel, Sha, StatusChip } from '../ui'
+import { LogSkeleton, Panel, Sha, StatusChip } from '../ui'
 
 type LiveRun = {
   id: string
@@ -24,6 +24,7 @@ function elapsed(run: LiveRun, now: number): string {
 export function LiveLog({ runId }: { runId: string }) {
   const [run, setRun] = useState<LiveRun | null>(null)
   const [lines, setLines] = useState<string[]>([])
+  const [ready, setReady] = useState(false)
   const [now, setNow] = useState(() => Date.now())
   const [error, setError] = useState(false)
   const scroller = useRef<HTMLDivElement>(null)
@@ -33,6 +34,7 @@ export function LiveLog({ runId }: { runId: string }) {
     let cancel = false
     setRun(null)
     setLines([])
+    setReady(false)
     setError(false)
     seen.current = 0
 
@@ -54,9 +56,13 @@ export function LiveLog({ runId }: { runId: string }) {
         })
         setLines(logBody.lines)
         setNow(Date.now())
+        setReady(true)
         setError(false)
       } catch {
-        if (!cancel) setError(true)
+        if (!cancel) {
+          setError(true)
+          setReady(true)
+        }
       }
     }
 
@@ -88,6 +94,10 @@ export function LiveLog({ runId }: { runId: string }) {
       }
     >
       <Box sx={{ height: '100%', minHeight: 0, display: 'flex', flexDirection: 'column' }}>
+        {!ready ? (
+          <LogSkeleton />
+        ) : (
+        <>
         <Box sx={{ px: 1.5, py: 1, borderBottom: '1px solid', borderColor: 'divider' }}>
           {!run && (
             <Typography variant="caption" color="text.secondary">
@@ -132,6 +142,8 @@ export function LiveLog({ runId }: { runId: string }) {
             </Box>
           ))}
         </Box>
+        </>
+        )}
       </Box>
     </Panel>
   )

@@ -1,9 +1,9 @@
 import { useEffect, useRef, useState } from 'react'
-import { Box, Button, Typography } from '@mui/material'
+import { Box, Button, Skeleton, Typography } from '@mui/material'
 import { useColorMode } from '../color-mode'
 import { formatAgo, mono, shortSha } from '../format'
 import { mainSha, mergeReady, pushDevelopSha, pushMainSha, type RepoSnapshot } from '../gates'
-import { Panel, Sha, StatusChip } from '../ui'
+import { LogSkeleton, Panel, RunSkeleton, Sha, StatusChip } from '../ui'
 import { LiveLog } from './LiveLog'
 
 type Run = {
@@ -91,7 +91,9 @@ function apiError(body: ApiBody, status: number, label: string): string {
 export function Board() {
   const { mode, toggle } = useColorMode()
   const [runs, setRuns] = useState<Run[]>([])
+  const [runsReady, setRunsReady] = useState(false)
   const [repo, setRepo] = useState<RepoSnapshot | null>(null)
+  const [repoReady, setRepoReady] = useState(false)
   const [offline, setOffline] = useState(false)
   const [selectedId, setSelectedId] = useState<string | null>(null)
   const [now, setNow] = useState(() => Date.now())
@@ -117,9 +119,13 @@ export function Board() {
           if (!Array.isArray(body.runs)) throw new Error('runs')
           setRuns(body.runs.map(normalize))
           setOffline(false)
+          setRunsReady(true)
           setNow(Date.now())
         } catch {
-          if (!cancel && mine === ticket) setOffline(true)
+          if (!cancel && mine === ticket) {
+            setOffline(true)
+            setRunsReady(true)
+          }
         }
       })()
       void (async () => {
@@ -129,8 +135,12 @@ export function Board() {
           const body = (await response.json()) as RepoSnapshot
           if (cancel || mine !== ticket) return
           setRepo(normalizeRepo(body))
+          setRepoReady(true)
         } catch {
-          if (!cancel && mine === ticket) setRepo(null)
+          if (!cancel && mine === ticket) {
+            setRepo(null)
+            setRepoReady(true)
+          }
         }
       })()
     }
@@ -263,21 +273,31 @@ export function Board() {
           <Typography variant="caption" sx={{ fontFamily: mono }}>
             ~/ci/repos/sample-app.git
           </Typography>
-          <Typography variant="caption" color={offline ? 'warning.main' : 'success.main'}>
-            {offline ? 'scheduler offline' : 'scheduler online'}
-          </Typography>
+          {!runsReady ? (
+            <Skeleton variant="text" width={118} height={16} />
+          ) : (
+            <Typography variant="caption" color={offline ? 'warning.main' : 'success.main'}>
+              {offline ? 'scheduler offline' : 'scheduler online'}
+            </Typography>
+          )}
           <Box sx={{ flex: 1 }} />
-          {canOpenMain && (
+          {!repoReady && (
+            <>
+              <Skeleton variant="rounded" width={150} height={30} />
+              <Skeleton variant="rounded" width={168} height={30} />
+            </>
+          )}
+          {repoReady && canOpenMain && (
             <Button type="button" size="small" variant="outlined" disabled={openingMain || pushing || mainBusy} onClick={() => void openMain()} sx={{ flexShrink: 0 }}>
               PR develop → main
             </Button>
           )}
-          {githubMainSha && (
+          {repoReady && githubMainSha && (
             <Button type="button" size="small" variant="contained" disabled={pushing || openingMain} onClick={() => void pushMain()} sx={{ flexShrink: 0 }}>
               Push main to GitHub {shortSha(githubMainSha)}
             </Button>
           )}
-          {developSha && (
+          {repoReady && developSha && (
             <Button type="button" size="small" variant="contained" disabled={pushing || openingMain} onClick={() => void pushDevelop()} sx={{ flexShrink: 0 }}>
               Push to develop {shortSha(developSha)}
             </Button>
@@ -302,6 +322,8 @@ export function Board() {
       <Box sx={{ flex: 1, minHeight: 0, display: 'grid', gridTemplateColumns: 'minmax(360px, 460px) minmax(0, 1fr)', gap: 1.25, p: 1.25 }}>
         <Box sx={{ minHeight: 0, display: 'grid', gridTemplateRows: 'auto auto minmax(0, 1fr)', gap: 1.25 }}>
           <Panel title="Runner" action={<Typography variant="caption" color="text.secondary">concurrency 1</Typography>}>
+            {!runsReady && <RunSkeleton />}
+            {runsReady && (
             <Box sx={{ px: 1.5, py: 1.25 }}>
               {offline && (
                 <Typography variant="caption" color="warning.main">
@@ -320,10 +342,26 @@ export function Board() {
                 </>
               )}
             </Box>
+            )}
           </Panel>
 
-          <Panel title="Queue" action={<Typography variant="caption" color="text.secondary">{offline ? 'offline' : queued.length}</Typography>}>
-            {!offline && queued.length === 0 && (
+          <Panel
+            title="Queue"
+            action={
+              !runsReady ? (
+                <Skeleton variant="text" width={16} height={14} />
+              ) : (
+                <Typography variant="caption" color="text.secondary">{offline ? 'offline' : queued.length}</Typography>
+              )
+            }
+          >
+            {!runsReady && (
+              <>
+                <RunSkeleton />
+                <RunSkeleton />
+              </>
+            )}
+            {runsReady && !offline && queued.length === 0 && (
               <Typography variant="caption" color="text.secondary" sx={{ display: 'block', px: 1.5, py: 1.25 }}>
                 Queue empty
               </Typography>
@@ -332,7 +370,15 @@ export function Board() {
           </Panel>
 
           <Panel title="History" fill>
-            {!offline && history.length === 0 && (
+            {!runsReady && (
+              <>
+                <RunSkeleton />
+                <RunSkeleton />
+                <RunSkeleton />
+                <RunSkeleton />
+              </>
+            )}
+            {runsReady && !offline && history.length === 0 && (
               <Typography variant="caption" color="text.secondary" sx={{ display: 'block', px: 1.5, py: 1.25 }}>
                 No finished runs
               </Typography>
@@ -341,7 +387,11 @@ export function Board() {
           </Panel>
         </Box>
 
-        {selected ? <LiveLog runId={selected.id} /> : (
+        {!runsReady ? (
+          <Panel title="Logs" fill scroll={false}>
+            <LogSkeleton />
+          </Panel>
+        ) : selected ? <LiveLog runId={selected.id} /> : (
           <Panel title="Logs" fill>
             <Typography variant="caption" color="text.secondary" sx={{ display: 'block', px: 1.5, py: 1.25 }}>
               No run selected

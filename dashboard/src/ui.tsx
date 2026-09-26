@@ -1,5 +1,5 @@
 import type { ReactNode } from 'react'
-import { Box, Chip, Tooltip, Typography } from '@mui/material'
+import { Box, Chip, Skeleton, Tooltip, Typography } from '@mui/material'
 import { mono } from './format'
 
 export function Panel({
@@ -47,6 +47,36 @@ export function Panel({
         {action}
       </Box>
       <Box sx={{ flex: fill ? 1 : undefined, minHeight: 0, overflow: scroll ? 'auto' : 'hidden' }}>{children}</Box>
+    </Box>
+  )
+}
+
+export function RunSkeleton() {
+  return (
+    <Box sx={{ px: 1.5, py: 1.1, borderBottom: '1px solid', borderColor: 'divider' }}>
+      <Box sx={{ display: 'flex', alignItems: 'center', gap: 1 }}>
+        <Skeleton variant="rounded" width={54} height={22} />
+        <Skeleton variant="text" width="42%" height={18} />
+      </Box>
+      <Skeleton variant="text" width="74%" height={16} />
+    </Box>
+  )
+}
+
+export function LogSkeleton() {
+  const widths = ['88%', '64%', '76%', '42%', '81%', '53%']
+  return (
+    <Box sx={{ px: 1.5, py: 1 }}>
+      <Box sx={{ display: 'flex', alignItems: 'center', gap: 1, mb: 1 }}>
+        <Skeleton variant="rounded" width={54} height={22} />
+        <Skeleton variant="text" width="28%" height={20} />
+        <Box sx={{ flex: 1 }} />
+        <Skeleton variant="text" width={48} height={16} />
+      </Box>
+      <Skeleton variant="text" width="70%" height={14} sx={{ mb: 1.5 }} />
+      {widths.map((width) => (
+        <Skeleton key={width} variant="text" width={width} height={16} />
+      ))}
     </Box>
   )
 }
