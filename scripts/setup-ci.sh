@@ -14,9 +14,6 @@ cp "$root/scheduler/hooks/pre-receive" "$bare/hooks/pre-receive"
 chmod +x "$bare/hooks/pre-receive"
 
 github="${1:-}"
-if [ -z "$github" ] && [ -f "$root/ci.config.json" ]; then
-  github=$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1])).get("github") or "")' "$root/ci.config.json")
-fi
 
 if [ -d "$sample/.git" ]; then
   git -C "$sample" remote remove ci >/dev/null 2>&1 || true
@@ -55,5 +52,5 @@ echo "ci remote: $bare"
 if [ -n "$github" ]; then
   echo "github: $github"
 else
-  echo "github: not set. Put the sample app remote in ci.config.json and run this script again."
+  echo "github: not set. Open http://127.0.0.1:5173 and save the GitHub remote."
 fi

@@ -10,6 +10,7 @@ import {
   readBranchSha,
   readDevelopSha,
   readOrigin,
+  setOrigin,
 } from './git-repo.ts'
 import { bareRepo } from './paths.ts'
 import {
@@ -23,7 +24,8 @@ import {
 } from './db.ts'
 import { startWorker } from './worker.ts'
 
-const ORIGIN_HELP = 'Set "github" in ci.config.json to the sample app GitHub remote, then run ./scripts/setup-ci.sh'
+const ORIGIN_HELP = 'Save the GitHub remote on the setup screen.'
+const GITHUB_REMOTE = /^(?:git@[\w.-]+:[\w./~-]+|ssh:\/\/git@[\w.-]+\/[\w./~-]+|https:\/\/[\w.-]+\/[\w./~-]+)(?:\.git)?$/
 const DELETED = '0000000000000000000000000000000000000000'
 const SHA = /^[0-9a-f]{40}$/
 const REF = /^refs\/heads\/[A-Za-z0-9._/-]+$/
@@ -153,6 +155,16 @@ app.post('/merges', async (request, reply) => {
   }
   clearRepoCache()
   return reply.code(201).send({ develop: run.candidateSha })
+})
+
+app.post('/setup', async (request, reply) => {
+  const body = request.body as { github?: unknown } | null
+  const github = typeof body?.github === 'string' ? body.github.trim() : ''
+  if (!GITHUB_REMOTE.test(github)) {
+    return reply.code(400).send({ error: 'Use a git@, ssh://, or https:// remote' })
+  }
+  setOrigin(bareRepo, github)
+  return reply.code(201).send({ origin: github })
 })
 
 app.post('/main', async (_request, reply) => {

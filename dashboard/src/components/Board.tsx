@@ -5,6 +5,7 @@ import { formatAgo, mono, shortSha } from '../format'
 import { mainSha, mergeReady, pushDevelopSha, pushMainSha, type RepoSnapshot } from '../gates'
 import { LogSkeleton, Panel, RunSkeleton, Sha, StatusChip } from '../ui'
 import { LiveLog } from './LiveLog'
+import { Onboarding } from './Onboarding'
 
 type Run = {
   id: string
@@ -264,6 +265,10 @@ export function Board() {
       onMerge={() => void mergeRun(run.id)}
     />
   )
+
+  if (repoReady && !offline && repo && !repo.origin) {
+    return <Onboarding onSaved={(origin) => setRepo({ ...repo, origin })} />
+  }
 
   return (
     <Box sx={{ height: '100%', display: 'flex', flexDirection: 'column', bgcolor: 'background.default' }}>

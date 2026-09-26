@@ -47,6 +47,15 @@ export function readOrigin(bareRepo: string): string | null {
   }
 }
 
+export function setOrigin(bareRepo: string, url: string) {
+  if (readOrigin(bareRepo)) {
+    gitSync(bareRepo, ['remote', 'set-url', 'origin', url])
+  } else {
+    gitSync(bareRepo, ['remote', 'add', 'origin', url])
+  }
+  clearRepoCache()
+}
+
 async function gitText(bareRepo: string, args: string[]): Promise<string> {
   const { stdout } = await execFileAsync('git', gitArgs(bareRepo, args), {
     encoding: 'utf8',
