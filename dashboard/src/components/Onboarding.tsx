@@ -61,12 +61,12 @@ export function Onboarding({ onSaved, onCancel }: { onSaved: (repository: RepoSn
           <Typography variant="body2" color="text.secondary">
             Local CI creates a bare repository, fetches its branches, and shows the exact `ci` remote path to add to your working copy.
           </Typography>
-          <TextField label="Repository ID" placeholder="rxrise-server" value={id} onChange={(event) => setId(event.target.value)} fullWidth />
-          <TextField label="Display name" placeholder="RxRise Server" value={name} onChange={(event) => setName(event.target.value)} fullWidth />
+          <TextField label="Repository ID" placeholder="my-project" value={id} onChange={(event) => setId(event.target.value)} fullWidth />
+          <TextField label="Display name" placeholder="My Project" value={name} onChange={(event) => setName(event.target.value)} fullWidth />
           <TextField
             autoFocus
             label="GitHub remote"
-            placeholder="git@github.com:you/rxrise-server.git"
+            placeholder="git@github.com:you/my-project.git"
             value={github}
             onChange={(event) => setGithub(event.target.value)}
             onKeyDown={(event) => { if (event.key === 'Enter') void save() }}
