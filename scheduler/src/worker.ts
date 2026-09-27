@@ -1,118 +1,81 @@
 import { spawn } from 'node:child_process'
 import { mkdirSync, rmSync } from 'node:fs'
 import { join } from 'node:path'
-import type { Readable } from 'node:stream'
-import { appendLog, claimNextRunForRepository, finishRun, getRepository, listRepositories } from './db.ts'
-import { readBranchSha, readDevelopSha } from './git-repo.ts'
+import { appendLog, claimNextRunGlobal, finishRun, getRepository } from './db.ts'
 import { workRoot } from './paths.ts'
+import { ActWorkflowRunner, runTimeoutMs } from './workflow-runner.ts'
 
-type ClaimedRun = NonNullable<ReturnType<typeof claimNextRunForRepository>>
+type ClaimedRun = NonNullable<ReturnType<typeof claimNextRunGlobal>>
+const runner = new ActWorkflowRunner()
+const active = new Map<string, AbortController>()
 
-function consume(stream: Readable | null, runId: string) {
-  let pending = ''
-  const write = (line: string) => {
-    if (line.length > 0) appendLog(runId, line)
-  }
-  if (stream) {
-    stream.setEncoding('utf8')
-    stream.on('data', (chunk: string | Buffer) => {
-      pending += typeof chunk === 'string' ? chunk : chunk.toString('utf8')
-      const parts = pending.split(/\r\n|\n|\r/)
-      pending = parts.pop() ?? ''
-      for (const line of parts) write(line)
-    })
-  }
-  return () => {
-    if (pending.length > 0) write(pending)
-    pending = ''
-  }
+function gitLogged(runId: string, args: string[], cwd?: string): Promise<number> {
+  appendLog(runId, `git ${args.join(' ')}`)
+  return new Promise((resolve) => {
+    const child = spawn('git', args, { cwd, stdio: ['ignore', 'pipe', 'pipe'], env: { ...process.env, GIT_TERMINAL_PROMPT: '0' } })
+    let tail = ''
+    for (const stream of [child.stdout, child.stderr]) {
+      stream.setEncoding('utf8')
+      stream.on('data', (chunk: string) => {
+        tail += chunk
+        const lines = tail.split(/\r\n|\r|\n/)
+        tail = lines.pop() ?? ''
+        for (const line of lines) if (line) appendLog(runId, line)
+      })
+    }
+    child.on('error', (error) => { appendLog(runId, `error: ${error.message}`); resolve(1) })
+    child.on('close', (code) => { if (tail) appendLog(runId, tail); resolve(code ?? 1) })
+  })
 }
 
-function spawnLogged(runId: string, command: string, args: string[], cwd?: string): Promise<number | null> {
-  appendLog(runId, [command, ...args].join(' '))
-  return new Promise((resolve) => {
-    const child = spawn(command, args, {
-      cwd,
-      env: { ...process.env, GIT_TERMINAL_PROMPT: '0' },
-      stdio: ['ignore', 'pipe', 'pipe'],
-    })
-    const flushOut = consume(child.stdout, runId)
-    const flushErr = consume(child.stderr, runId)
-    let settled = false
-    const done = (code: number | null) => {
-      if (settled) return
-      settled = true
-      flushOut()
-      flushErr()
-      resolve(code)
-    }
-    child.on('error', (error) => {
-      appendLog(runId, error.message)
-      done(null)
-    })
-    child.on('close', (code) => {
-      done(code)
-    })
-  })
+export function cancelActiveRun(id: string) {
+  const controller = active.get(id)
+  if (!controller) return false
+  appendLog(id, 'cancel requested')
+  controller.abort('canceled')
+  return true
 }
 
 async function execute(run: ClaimedRun) {
   const workDir = join(workRoot, run.id)
-  const outcome: { status: 'passed' | 'failed'; exitCode: number | null } = {
-    status: 'failed',
-    exitCode: 1,
-  }
+  const controller = new AbortController()
+  active.set(run.id, controller)
+  let timedOut = false
+  const timeout = setTimeout(() => {
+    timedOut = true
+    appendLog(run.id, `error: workflow exceeded ${Math.round(runTimeoutMs / 60000)} minute limit`)
+    controller.abort('timeout')
+  }, runTimeoutMs)
+  let status: 'passed' | 'failed' | 'canceled' = 'failed'
+  let exitCode: number | null = 1
   try {
     const repository = getRepository(run.repository)
-    if (!repository) {
-      appendLog(run.id, `error: unknown repository ${run.repository}`)
-      return
-    }
-
+    if (!repository) throw new Error(`unknown repository ${run.repository}`)
+    if (!run.candidateSha || run.newSha !== run.candidateSha) throw new Error('run has no immutable candidate SHA')
     mkdirSync(workRoot, { recursive: true })
     rmSync(workDir, { recursive: true, force: true })
-    mkdirSync(workDir, { recursive: true })
-
-    const cloneCode = await spawnLogged(run.id, 'git', ['clone', '--local', repository.barePath, workDir])
-    if (cloneCode !== 0) {
-      appendLog(run.id, `error: git clone failed (${cloneCode ?? 'spawn error'})`)
-      outcome.exitCode = cloneCode
-      return
-    }
-
-    const checkoutCode = await spawnLogged(run.id, 'git', ['checkout', run.newSha], workDir)
-    if (checkoutCode !== 0) {
-      appendLog(run.id, `error: git checkout failed (${checkoutCode ?? 'spawn error'})`)
-      outcome.exitCode = checkoutCode
-      return
-    }
-
-    const ciCode = await spawnLogged(run.id, 'npm', ['ci'], workDir)
-    if (ciCode !== 0) {
-      appendLog(run.id, `error: npm ci failed (${ciCode ?? 'spawn error'})`)
-      outcome.exitCode = ciCode
-      return
-    }
-
-    const testCode = await spawnLogged(run.id, 'npm', ['test'], workDir)
-    if (testCode === 0) {
-      outcome.status = 'passed'
-      outcome.exitCode = 0
-      return
-    }
-    appendLog(run.id, `error: npm test failed (${testCode ?? 'spawn error'})`)
-    outcome.exitCode = testCode
-  } catch (err) {
-    const message = err instanceof Error ? err.message : String(err)
-    appendLog(run.id, `error: ${message}`)
-    outcome.status = 'failed'
-    outcome.exitCode = 1
+    if (await gitLogged(run.id, ['clone', '--local', '--no-checkout', repository.barePath, workDir]) !== 0) throw new Error('git clone failed')
+    if (await gitLogged(run.id, ['fetch', 'origin', `refs/local-ci/candidates/${run.candidateSha}`], workDir) !== 0) throw new Error('candidate fetch failed')
+    if (await gitLogged(run.id, ['checkout', '--detach', run.candidateSha], workDir) !== 0) throw new Error('candidate checkout failed')
+    if (controller.signal.aborted) return
+    exitCode = await runner.run({
+      workspace: workDir,
+      repository: run.repository,
+      ref: run.ref,
+      sha: run.candidateSha,
+      runId: run.id,
+      signal: controller.signal,
+      log: (line) => appendLog(run.id, line),
+    })
+    status = exitCode === 0 ? 'passed' : 'failed'
+  } catch (error) {
+    appendLog(run.id, `error: ${error instanceof Error ? error.message : String(error)}`)
   } finally {
-    try {
-      finishRun(run.id, outcome.status, outcome.exitCode)
-    } finally {
-      rmSync(workDir, { recursive: true, force: true })
-    }
+    clearTimeout(timeout)
+    if (controller.signal.aborted && !timedOut) { status = 'canceled'; exitCode = null }
+    finishRun(run.id, status, exitCode)
+    active.delete(run.id)
+    rmSync(workDir, { recursive: true, force: true })
   }
 }
 
@@ -120,16 +83,10 @@ export function startWorker() {
   let busy = false
   const tick = () => {
     if (busy) return
-    const run = listRepositories().map((repository) => claimNextRunForRepository(
-      repository.id,
-      readDevelopSha(repository.barePath),
-      readBranchSha(repository.barePath, 'main'),
-    )).find((candidate) => candidate !== undefined)
-    if (run === undefined) return
+    const run = claimNextRunGlobal()
+    if (!run) return
     busy = true
-    void execute(run).finally(() => {
-      busy = false
-    })
+    void execute(run).finally(() => { busy = false })
   }
   setInterval(tick, 1000)
   tick()
