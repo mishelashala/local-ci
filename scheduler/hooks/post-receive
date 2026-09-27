@@ -5,13 +5,12 @@ url="http://127.0.0.1:3001/events"
 
 while read -r old new ref; do
   payload=$(printf '{"repository":"%s","ref":"%s","oldSha":"%s","newSha":"%s"}' "$repo" "$ref" "$old" "$new")
-  if ! curl --silent --show-error --fail --max-time 3 \
+  if ! curl --silent --show-error --fail --max-time 30 \
     -X POST "$url" \
     -H 'content-type: application/json' \
     -d "$payload"
   then
-    echo "ci scheduler did not accept $ref" >&2
-    exit 1
+    echo "ci scheduler did not accept $ref; enqueue it from the dashboard after checking synchronization" >&2
   fi
   echo
 done
