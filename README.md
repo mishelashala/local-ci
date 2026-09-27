@@ -25,10 +25,10 @@ Choose Add repository in the dashboard and enter an ID, display name, and GitHub
 
 In a working copy, use the exact bare path displayed in the dashboard:
 
-    git remote add ci /absolute/path/to/local-ci/ci/repos/rxrise-server.git
+    git remote add ci /absolute/path/to/local-ci/ci/repos/my-project.git
     git push ci feature/my-change
 
-A push notifies the scheduler. If a push arrived while the scheduler was offline, click Run beside that branch after restarting. The runner clones the retained candidate SHA into a disposable checkout, runs `act pull_request` against `.local-ci/workflows/*.yml` (falling back to `.github/workflows` if the local directory is absent), records streamed logs and exit status in SQLite, and deletes the checkout. It simulates a PR from the pushed branch to `develop` on the exact temporary merge commit. Branch and path filters select applicable workflows; a repository without an open/synchronize PR test workflow fails instead of appearing green. A workflow excluded by its path filters has no checks, as on GitHub. The GitHub-only PR-closed reset workflow is excluded. Failed Playwright upload-artifact steps can write to `scheduler/data/work/artifacts/<run-id>`.
+A push notifies the scheduler. If a push arrived while the scheduler was offline, click Run beside that branch after restarting. The runner clones the retained candidate SHA into a disposable checkout, runs `act pull_request` against `.local-ci/workflows/*.yml` (falling back to `.github/workflows` if the local directory is absent), records streamed logs and exit status in SQLite, and deletes the checkout. It simulates a PR from the pushed branch to `develop` on the exact temporary merge commit. Branch and path filters select applicable workflows; a repository without an open/synchronize PR test workflow fails instead of appearing green. A workflow excluded by its path filters has no checks, as on GitHub. The GitHub-only PR-closed reset workflow is excluded. Failed upload-artifact steps can write to `scheduler/data/work/artifacts/<run-id>`.
 
 The run detail panel lists each selected YAML with its live status and exit code. Click a workflow to see only its logs, or All logs for the complete run. The same data is available through `GET /api/runs/:id/workflows` and `GET /api/runs/:id/logs?workflow=<encoded-path>`.
 
@@ -36,7 +36,7 @@ The run detail panel lists each selected YAML with its live status and exit code
 
 An agent can poll its result with `node scripts/ci-wait.mjs <repository-id> <branch> [head-sha]`; exit 0 means integrated, 1 means failed, and 2 means timed out. `GET /api/runs/:id/result` returns machine-readable run state, failure lines, artifact directory and logs URL. The task identifier currently defaults to the feature branch name. The agent must run this command itself and repair its own failures; local-ci does not send messages to a suspended agent process.
 
-The current `rxrise-server` local workflow runs architecture, migration undo, and backend tests with a Postgres service and Node 22/pnpm 10.15.0. The `rxrise-marketplaces` local workflows run architecture, unit, and Playwright tests with Node 20/pnpm 10.15.0. They are copied from each project's current `develop` YAML; edit `.local-ci/workflows` independently as the local pipeline evolves. Commit these files to the project before testing the branch. `act` uses the host Docker daemon for fresh runners and workflow service containers. It reuses locally cached images; a first run downloads missing images. LOCAL_CI_ACT_PLATFORM selects the ubuntu-latest image, LOCAL_CI_CONTAINER_ARCH selects its architecture, and LOCAL_CI_RUN_TIMEOUT_MINUTES defaults to 45.
+Define each repository's checks in its own `.local-ci/workflows` directory. You can copy existing GitHub workflow YAML as a starting point and then evolve the local pipeline independently. Commit these files to the project before testing the branch. `act` uses the host Docker daemon for fresh runners and workflow service containers. It reuses locally cached images; a first run downloads missing images. LOCAL_CI_ACT_PLATFORM selects the ubuntu-latest image, LOCAL_CI_CONTAINER_ARCH selects its architecture, and LOCAL_CI_RUN_TIMEOUT_MINUTES defaults to 45.
 
 ## Promotion and recovery
 
@@ -44,7 +44,7 @@ The current `rxrise-server` local workflow runs architecture, migration undo, an
 2. Click Validate develop → main to freeze that repository and test a fixed release snapshot. Once passed, click Push main to GitHub. If validation fails, the freeze releases. Push main is a local promotion gate, not a GitHub pull request.
 3. After main is pushed, click Reset develop to main, or Release promotion to keep the current develop history. Reset uses a GitHub force-with-lease guard and an exact local compare-and-swap. If GitHub reset succeeds but local update is interrupted, retry Reset develop; the operation recognizes the already-reset remote. A conflicting local change blocks integration for explicit recovery. The freeze persists across scheduler restarts. Waiting feature branches are retested after it releases.
 
-Optionally define `.local-ci/workflows/develop-smoke.yml` with `on: push` for `develop`. This short workflow runs ahead of other candidates after each local integration, pauses staging and further merges, and rolls back the exact local commit if it fails. A moved ref blocks rollback and needs explicit recovery. Neither project has a real app health smoke workflow configured yet, so there is no automatic health rollback until you add checks that can detect the broken app.
+Optionally define `.local-ci/workflows/develop-smoke.yml` with `on: push` for `develop`. This short workflow runs ahead of other candidates after each local integration, pauses staging and further merges, and rolls back the exact local commit if it fails. A moved ref blocks rollback and needs explicit recovery. Without a smoke workflow that checks application health, there is no automatic health rollback.
 
 The dashboard fetches GitHub refs. A strictly ahead GitHub branch fast-forwards local develop/main. Local ahead commits remain intact. Divergence blocks normal validation and pushing: click Validate reconciliation to run the full workflow against a temporary merge of GitHub and local develop, then click Reconcile develop after it passes. Push the resulting develop separately. Resolve conflicts in a working copy.
 
@@ -58,7 +58,7 @@ When a feature branch exceeds the drift limit at ingress, Sync/Rebase shows comm
 | Per-YAML workflow statuses and log drilldown | Done; full Docker job behavior needs acceptance run |
 | One command and one HTTP server for dashboard and API | Done |
 | Exact merge candidate, serial SQLite queue, automatic integration, latest-base retesting, superseded pushes | Implemented; integration test passes |
-| Local workflow selection, PR event, Postgres/Playwright via act, isolated checkout, logs, timeout/cancel | Implemented; needs actual Docker/workflow acceptance run |
+| Local workflow selection, PR event, workflow services and browser jobs via act, isolated checkout, logs, timeout/cancel | Implemented; needs actual Docker/workflow acceptance run |
 | GitHub sync, divergence reconciliation, explicit guarded pushes/reset | Implemented; needs test with your GitHub permissions and branch rules |
 | Durable per-repository promotion freeze, staging snapshot, guarded reset and recovery | Implemented; needs live GitHub acceptance run |
 | Agent wait command, task branch result, manual enqueue, cancel, retry | Done; interrupted jobs require manual retry |
@@ -68,9 +68,9 @@ When a feature branch exceeds the drift limit at ingress, Sync/Rebase shows comm
 
 ## First test
 
-1. Start Docker; verify `docker info` and `act --version` (Compose installs act inside its container). Start Local CI; connect rxrise-server and rxrise-marketplaces. Ensure their `.local-ci/workflows` files have been merged into each develop branch or are present on the feature branch you push.
-2. In either project's working copy, `git remote add ci <path displayed in dashboard>`, then `git push ci feat/some-branch`. Wait for automatic integration with `node /path/to/local-ci/scripts/ci-wait.mjs rxrise-server feat/some-branch <head-sha>`. Check the PR event, selected workflows, candidate SHA, and individual job output. A deliberately failing test must leave develop unchanged. Check the Postgres service and Playwright artifact path on failure.
+1. Start Docker; verify `docker info` and `act --version` (Compose installs act inside its container). Start Local CI; connect two repositories. Ensure their `.local-ci/workflows` files have been merged into each develop branch or are present on the feature branch you push.
+2. In a connected project's working copy, `git remote add ci <path displayed in dashboard>`, then `git push ci feat/some-branch`. Wait for automatic integration with `node /path/to/local-ci/scripts/ci-wait.mjs <repository-id> feat/some-branch <head-sha>`. Check the PR event, selected workflows, candidate SHA, and individual job output. A deliberately failing test must leave develop unchanged. If workflows use services or artifacts, inspect their behavior on failure.
 3. Push the healthy local develop snapshot to GitHub when staging is desired, then `git fetch origin && git pull --ff-only origin develop` in your working copy. Validate develop against main, push main, and explicitly reset or release promotion. Submit another branch during promotion and verify that it waits and is retested after reset.
 4. Add a second repository and check the selector and shared queue. Change GitHub develop outside Local CI to test fast-forward or divergence before using production branches.
 
-INTENT.md describes the target behavior. This development environment has no Docker or act binary, so the real Postgres/Playwright container and GitHub deployment flow remains an acceptance test. The TypeScript builds, fake-act workflow selection, and a real-Git/SQLite integration test were exercised. Do not disable GitHub Actions until both project workflows pass on the deployment machine.
+INTENT.md describes the target behavior. This development environment has no Docker or act binary, so real workflow containers and the GitHub deployment flow remain acceptance tests. The TypeScript builds, fake-act workflow selection, and a real-Git/SQLite integration test were exercised. Keep existing GitHub checks in place until the connected repositories' workflows pass on the deployment machine.

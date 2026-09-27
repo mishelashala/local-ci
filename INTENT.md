@@ -1303,6 +1303,6 @@ Promotion, GitHub staging push, GitHub main push, and the post-promotion reset r
 
 ## Verification boundary
 
-The scheduler must be tested with real Git/SQLite races and fake `act` workflow events, then accepted on the intended Docker host with the actual rxrise-server Postgres checks and rxrise-marketplaces Playwright checks. Passing YAML checks does not establish product correctness or production health. Do not remove GitHub Actions until those real runs and the recovery drills pass.
+The scheduler must be tested with real Git/SQLite races and fake `act` workflow events, then accepted on the intended Docker host with each connected repository's actual workflows, including any service containers and browser jobs they use. Passing YAML checks does not establish product correctness or production health. Do not remove existing hosted checks until those real runs and the recovery drills pass.
 
 ---
