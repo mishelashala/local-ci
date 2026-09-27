@@ -28,7 +28,7 @@ function isSha40(value: string | null | undefined): value is string {
 }
 
 export function mergeReady(run: MergeCandidate, repo: RepoSnapshot | null): boolean {
-  if (repo === null || run.target === 'main' || run.target === 'reconcile' || repo.githubDevelop?.relation === 'diverged') return false
+  if (repo === null || run.target === 'main' || run.target === 'reconcile' || run.target === 'post-merge' || repo.githubDevelop?.relation === 'diverged') return false
   const branch = repo.branches.find((item) => item.name === run.branch)
   return (
     run.status === 'passed' &&
@@ -41,8 +41,9 @@ export function mergeReady(run: MergeCandidate, repo: RepoSnapshot | null): bool
 export function pushDevelopSha(runs: readonly MergeCandidate[], repo: RepoSnapshot | null): string | null {
   if (repo === null || !isSha40(repo.develop)) return null
   const develop = repo.develop
-  const matched = runs.some((run) => run.status === 'passed' && run.target !== 'main' && run.candidateSha === develop)
-  return matched ? develop : null
+  const candidate = runs.some((run) => run.status === 'passed' && (run.target === 'develop' || run.target === 'reconcile' || !run.target) && run.candidateSha === develop)
+  const postMerge = runs.some((run) => run.status === 'passed' && run.target === 'post-merge' && run.candidateSha === develop)
+  return candidate && postMerge ? develop : null
 }
 
 export function mainSha(repo: RepoSnapshot | null): string | null {
