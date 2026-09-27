@@ -86,7 +86,7 @@ export type CandidateInput = {
   baseSha: string | null
   headSha: string | null
   candidateSha: string | null
-  target?: 'develop' | 'main' | 'reconcile'
+  target?: 'develop' | 'main' | 'reconcile' | 'post-merge'
   status: 'queued' | 'failed'
   logLine?: string
 }
@@ -150,7 +150,7 @@ export function recordCandidate(input: CandidateInput) {
     newSha: input.newSha,
     status: input.status,
     trigger: 'candidate',
-    workflow: '.github/workflows/ci.yml',
+    workflow: '.github/workflows/* (pull_request)',
     createdAt: now,
     startedAt: null,
     finishedAt: failed ? now : null,
@@ -190,6 +190,12 @@ export function hasPassedCandidate(repository: string, sha: string) {
     )
     .get(repository, sha) as { id: string } | undefined
   return row !== undefined
+}
+
+export function hasPassedPostMerge(repository: string, sha: string) {
+  return Boolean(sqlite.prepare(`SELECT id FROM runs
+    WHERE repository = ? AND status = 'passed' AND trigger = 'candidate'
+      AND target = 'post-merge' AND candidate_sha = ? LIMIT 1`).get(repository, sha))
 }
 
 export function findPassedMain(repository: string, mainSha: string, developSha: string): string | undefined {
@@ -295,7 +301,7 @@ export function retryRun(runId: string) {
     baseSha: prior.baseSha,
     headSha: prior.headSha,
     candidateSha: prior.candidateSha,
-    target: (prior.target ?? 'develop') as 'develop' | 'main' | 'reconcile',
+    target: (prior.target ?? 'develop') as CandidateInput['target'],
     status: 'queued',
   })
 }
