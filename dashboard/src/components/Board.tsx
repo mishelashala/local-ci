@@ -78,6 +78,10 @@ function normalizeRepo(body: RepoSnapshot): RepoSnapshot {
       }]
     }),
     origin: body.origin ?? null,
+    githubDevelop: body.githubDevelop,
+    githubMain: body.githubMain,
+    syncError: body.syncError ?? null,
+    pendingReset: body.pendingReset ?? null,
   }
 }
 
@@ -120,6 +124,18 @@ export function Board() {
   const [pushNotice, setPushNotice] = useState<PushNotice | null>(null)
   const mergeLock = useRef<string | null>(null)
   const pushLock = useRef(false)
+
+  async function action(path: string, payload: unknown, label: string) {
+    if (pushLock.current) return
+    pushLock.current = true
+    setPushing(true)
+    setPushNotice(null)
+    try {
+      const result = await postJson(path, payload)
+      setPushNotice(result.ok ? { ok: true, remote: `${label} complete` } : { ok: false, error: apiError(result.body, result.status, label) })
+    } catch { setPushNotice({ ok: false, error: `${label} request failed` }) }
+    finally { pushLock.current = false; setPushing(false) }
+  }
 
   useEffect(() => {
     let cancel = false
@@ -281,6 +297,9 @@ export function Board() {
       merging={mergingId === run.id}
       mergeError={mergeErrors[run.id] ?? null}
       onMerge={() => void mergeRun(run.id)}
+      onCancel={() => void action(`/api/runs/${encodeURIComponent(run.id)}/cancel`, {}, 'Cancel')}
+      onRetry={() => void action(`/api/runs/${encodeURIComponent(run.id)}/retry`, {}, 'Retry')}
+      onReconcile={() => void action('/api/reconciliations', { runId: run.id }, 'Reconcile develop')}
     />
   )
 
@@ -319,6 +338,9 @@ export function Board() {
           )}
           <Box sx={{ flex: 1 }} />
           {repoReady && repositories.length > 0 && <Button type="button" size="small" onClick={() => setShowSetup(true)}>Add repository</Button>}
+          {repo && <Button type="button" size="small" disabled={pushing} onClick={() => void action('/api/sync', { repository: repo.id }, 'Sync')}>Sync GitHub</Button>}
+          {repo?.githubDevelop?.relation === 'diverged' && <Button type="button" size="small" color="warning" disabled={pushing} onClick={() => void action('/api/reconcile', { repository: repo.id }, 'Validate reconciliation')}>Validate reconciliation</Button>}
+          {repo?.pendingReset && <Button type="button" size="small" color="warning" variant="outlined" disabled={pushing} onClick={() => void action('/api/reset-develop', { repository: repo.id }, 'Reset develop')}>Reset develop to main</Button>}
           {!repoReady && (
             <>
               <Skeleton variant="rounded" width={150} height={30} />
@@ -352,6 +374,10 @@ export function Board() {
             {pushNotice.ok ? pushNotice.remote : pushNotice.error}
           </Typography>
         )}
+        {repo?.syncError && <Typography variant="caption" color="error.main" sx={{ display: 'block' }}>GitHub sync: {repo.syncError}</Typography>}
+        {repo?.githubDevelop && <Typography variant="caption" color={repo.githubDevelop.relation === 'diverged' ? 'error.main' : 'text.secondary'} sx={{ display: 'block' }}>
+          GitHub develop: {repo.githubDevelop.relation} · local {shortSha(repo.githubDevelop.local ?? '')} · GitHub {shortSha(repo.githubDevelop.github ?? '')}
+        </Typography>}
         <Typography variant="caption" color="text.secondary" sx={{ display: 'block', mt: 0.5 }}>
           Merge moves local develop. Push to develop sends it to GitHub. PR develop → main runs tests, then Push main sends that commit to GitHub main.
         </Typography>
@@ -418,6 +444,8 @@ export function Board() {
                 <Typography variant="caption" color="text.secondary" sx={{ fontFamily: mono }}><Sha value={branch.sha} /></Typography>
                 {branch.behindDevelop !== null && branch.name !== 'develop' && <Typography variant="caption" color={branch.behindDevelop > (repo?.maxBranchDrift ?? 10) ? 'error.main' : 'text.secondary'}>{branch.behindDevelop} behind</Typography>}
                 <Chip size="small" label={branch.status.replaceAll('-', ' ')} color={branch.status === 'ready-to-merge' || branch.status === 'ready-to-deploy' ? 'success' : branch.status === 'failed' || branch.status === 'sync-required' ? 'error' : 'default'} />
+                {branch.name !== 'main' && branch.name !== 'develop' && branch.status !== 'sync-required' && <Button size="small" onClick={() => void action('/api/runs/manual', { repository: repo.id, branch: branch.name }, 'Enqueue')}>Run</Button>}
+                {branch.status === 'sync-required' && <Button size="small" onClick={() => setPushNotice({ ok: false, error: `Sync ${branch.name} in your working copy: git fetch ci develop && git rebase ci/develop && git push --force-with-lease ci ${branch.name}` })}>Sync/Rebase</Button>}
               </Box>
             ))}
           </Panel>
@@ -465,6 +493,9 @@ function RunSummary({
   merging,
   mergeError,
   onMerge,
+  onCancel,
+  onRetry,
+  onReconcile,
 }: {
   run: Run
   now: number
@@ -474,6 +505,9 @@ function RunSummary({
   merging: boolean
   mergeError: string | null
   onMerge: () => void
+  onCancel: () => void
+  onRetry: () => void
+  onReconcile: () => void
 }) {
   return (
     <Box
@@ -533,6 +567,13 @@ function RunSummary({
               {mergeError}
             </Typography>
           ) : null}
+        </Box>
+      )}
+      {(run.status === 'queued' || run.status === 'running' || run.status === 'failed' || run.status === 'canceled' || run.status === 'stale' || (run.target === 'reconcile' && run.status === 'passed')) && (
+        <Box sx={{ mt: 0.5 }}>
+          {(run.status === 'queued' || run.status === 'running') && <Button size="small" onClick={(event) => { event.stopPropagation(); onCancel() }}>Cancel</Button>}
+          {(run.status === 'failed' || run.status === 'canceled' || run.status === 'stale') && run.candidateSha && <Button size="small" onClick={(event) => { event.stopPropagation(); onRetry() }}>Retry</Button>}
+          {run.target === 'reconcile' && run.status === 'passed' && <Button size="small" color="success" onClick={(event) => { event.stopPropagation(); onReconcile() }}>Reconcile develop</Button>}
         </Box>
       )}
     </Box>
