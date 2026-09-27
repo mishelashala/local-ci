@@ -1,0 +1,20 @@
+services:
+  local-ci:
+    build: .
+    working_dir: ${LOCAL_CI_ROOT:?Set LOCAL_CI_ROOT to the absolute project directory}
+    volumes:
+      - ${LOCAL_CI_ROOT}:${LOCAL_CI_ROOT}
+      - /var/run/docker.sock:/var/run/docker.sock
+      - scheduler_modules:${LOCAL_CI_ROOT}/scheduler/node_modules
+      - dashboard_modules:${LOCAL_CI_ROOT}/dashboard/node_modules
+    environment:
+      LOCAL_CI_ROOT: ${LOCAL_CI_ROOT}
+      LOCAL_CI_HOST: 0.0.0.0
+      LOCAL_CI_ACT_PLATFORM: ${LOCAL_CI_ACT_PLATFORM:-ubuntu-latest=catthehacker/ubuntu:act-latest}
+      LOCAL_CI_CONTAINER_ARCH: ${LOCAL_CI_CONTAINER_ARCH:-linux/amd64}
+    ports:
+      - 127.0.0.1:3001:3001
+    command: ["sh", "-c", "cp -an /app/scheduler/node_modules/. \"$LOCAL_CI_ROOT/scheduler/node_modules/\" && cp -an /app/dashboard/node_modules/. \"$LOCAL_CI_ROOT/dashboard/node_modules/\" && mkdir -p \"$LOCAL_CI_ROOT/dashboard/dist\" && cp -a /app/dashboard/dist/. \"$LOCAL_CI_ROOT/dashboard/dist/\" && node --import ./scheduler/node_modules/tsx/dist/loader.mjs scheduler/src/index.ts"]
+volumes:
+  scheduler_modules:
+  dashboard_modules:
