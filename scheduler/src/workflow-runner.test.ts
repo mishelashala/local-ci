@@ -51,6 +51,7 @@ test('feature push uses local PR workflows and the exact merge event', async () 
     assert.equal(calls[0].event.pull_request.head.ref, 'feat/example')
     assert.equal(calls[0].event.pull_request.base.ref, 'develop')
     assert.equal(calls[0].event.pull_request.merge_commit_sha, sha)
+    assert.equal(git('rev-parse', 'refs/remotes/origin/develop'), baseSha)
     assert(lines.some((line) => line.includes('workflows: .local-ci/workflows/architecture.yml')))
   } finally {
     process.env.PATH = priorPath

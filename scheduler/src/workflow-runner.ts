@@ -98,6 +98,10 @@ export class ActWorkflowRunner implements WorkflowRunner {
     }
     const base = input.target === 'main' ? 'main' : 'develop'
     const head = input.ref.replace(/^refs\/heads\//, '')
+    // act copies this disposable checkout into the job container. Its origin URL is a
+    // host path, so prepare the ratchet ref here instead of fetching inside the job.
+    execFileSync('git', ['update-ref', 'refs/remotes/origin/develop',
+      input.target === 'main' ? input.headSha : input.baseSha], { cwd: input.workspace })
     const eventPath = join(input.workspace, '.local-ci-event.json')
     writeFileSync(eventPath, JSON.stringify({
       action: 'synchronize',
