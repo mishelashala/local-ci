@@ -5,6 +5,7 @@ import Database from 'better-sqlite3'
 import { asc, desc, eq } from 'drizzle-orm'
 import { drizzle } from 'drizzle-orm/better-sqlite3'
 import { logs, repositories, runs } from './schema.ts'
+import { readBranchSha } from './git-repo.ts'
 
 const dataDir = join(dirname(fileURLToPath(import.meta.url)), '..', 'data')
 mkdirSync(dataDir, { recursive: true })
@@ -62,6 +63,17 @@ sqlite.exec(`
   )
 `)
 
+sqlite.exec(`
+  CREATE TABLE IF NOT EXISTS promotions (
+    repository TEXT PRIMARY KEY,
+    main_sha TEXT NOT NULL,
+    develop_sha TEXT NOT NULL,
+    github_develop_sha TEXT,
+    status TEXT NOT NULL,
+    created_at INTEGER NOT NULL
+  )
+`)
+
 sqlite.prepare(`UPDATE runs SET status = 'failed', exit_code = 1, finished_at = ? WHERE status = 'running'`).run(Date.now())
 
 export const db = drizzle(sqlite)
@@ -74,7 +86,7 @@ export type CandidateInput = {
   baseSha: string | null
   headSha: string | null
   candidateSha: string | null
-  target?: 'develop' | 'main'
+  target?: 'develop' | 'main' | 'reconcile'
   status: 'queued' | 'failed'
   logLine?: string
 }
@@ -173,7 +185,7 @@ export function hasPassedCandidate(repository: string, sha: string) {
     .prepare(
       `SELECT id FROM runs
        WHERE repository = ? AND status = 'passed' AND trigger = 'candidate' AND candidate_sha = ?
-         AND (target IS NULL OR target = 'develop')
+         AND (target IS NULL OR target IN ('develop', 'reconcile'))
        LIMIT 1`,
     )
     .get(repository, sha) as { id: string } | undefined
@@ -223,6 +235,25 @@ export function saveRepository(input: { id: string; name: string; barePath: stri
   return getRepository(input.id)
 }
 
+export function savePromotion(repository: string, mainSha: string, developSha: string, githubDevelopSha: string | null) {
+  sqlite.prepare(`INSERT INTO promotions (repository, main_sha, develop_sha, github_develop_sha, status, created_at)
+    VALUES (?, ?, ?, ?, 'pending', ?)
+    ON CONFLICT(repository) DO UPDATE SET main_sha=excluded.main_sha, develop_sha=excluded.develop_sha,
+      github_develop_sha=excluded.github_develop_sha, status='pending', created_at=excluded.created_at`)
+    .run(repository, mainSha, developSha, githubDevelopSha, Date.now())
+}
+
+export function pendingPromotion(repository: string) {
+  return sqlite.prepare(`SELECT main_sha AS mainSha, develop_sha AS developSha, github_develop_sha AS githubDevelopSha
+    FROM promotions WHERE repository = ? AND status = 'pending'`).get(repository) as
+    | { mainSha: string; developSha: string; githubDevelopSha: string | null }
+    | undefined
+}
+
+export function finishPromotion(repository: string) {
+  sqlite.prepare(`UPDATE promotions SET status = 'completed' WHERE repository = ? AND status = 'pending'`).run(repository)
+}
+
 export function getRun(id: string) {
   return db.select().from(runs).where(eq(runs.id, id)).get()
 }
@@ -246,6 +277,42 @@ export function appendLog(runId: string, line: string) {
 
 export function finishRun(runId: string, status: 'passed' | 'failed' | 'canceled', exitCode: number | null) {
   db.update(runs).set({ status, exitCode, finishedAt: Date.now() }).where(eq(runs.id, runId)).run()
+}
+
+export function cancelQueuedRun(runId: string) {
+  return sqlite.prepare(`UPDATE runs SET status = 'canceled', finished_at = ?, exit_code = NULL WHERE id = ? AND status = 'queued'`).run(Date.now(), runId).changes === 1
+}
+
+export function retryRun(runId: string) {
+  const prior = getRun(runId)
+  if (!prior || !['failed', 'canceled', 'stale'].includes(prior.status)) return undefined
+  if (!prior.candidateSha || !prior.baseSha || !prior.headSha) return undefined
+  return recordCandidate({
+    repository: prior.repository,
+    ref: prior.ref,
+    oldSha: prior.oldSha,
+    newSha: prior.candidateSha,
+    baseSha: prior.baseSha,
+    headSha: prior.headSha,
+    candidateSha: prior.candidateSha,
+    target: (prior.target ?? 'develop') as 'develop' | 'main' | 'reconcile',
+    status: 'queued',
+  })
+}
+
+export function claimNextRunGlobal() {
+  const claim = sqlite.transaction(() => {
+    if (sqlite.prepare(`SELECT id FROM runs WHERE status = 'running' LIMIT 1`).get()) return undefined
+    for (const repository of listRepositories()) {
+      // Current refs are checked by the worker before this transaction as well.
+      staleCandidates(repository.id, readBranchSha(repository.barePath, 'develop'), readBranchSha(repository.barePath, 'main'))
+    }
+    const next = sqlite.prepare(`SELECT id FROM runs WHERE status = 'queued' ORDER BY created_at ASC, id ASC LIMIT 1`).get() as { id: string } | undefined
+    if (!next) return undefined
+    const changed = sqlite.prepare(`UPDATE runs SET status = 'running', started_at = ? WHERE id = ? AND status = 'queued'`).run(Date.now(), next.id)
+    return changed.changes === 1 ? getRun(next.id) : undefined
+  })
+  return claim()
 }
 
 export function claimNextRun(developSha: string | null, mainSha: string | null) {

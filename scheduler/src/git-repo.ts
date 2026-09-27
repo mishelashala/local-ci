@@ -124,6 +124,11 @@ export function compareAndSwapDevelop(bareRepo: string, newSha: string, oldSha: 
   compareAndSwapRef(bareRepo, 'refs/heads/develop', newSha, oldSha)
 }
 
+export function retainCandidate(bareRepo: string, sha: string) {
+  if (!SHA.test(sha)) throw new Error('invalid candidate SHA')
+  gitSync(bareRepo, ['update-ref', `refs/local-ci/candidates/${sha}`, sha])
+}
+
 export async function pushRef(bareRepo: string, source: string, destination: string): Promise<{ ok: true } | { error: string }> {
   try {
     await execFileAsync('git', gitArgs(bareRepo, ['push', 'origin', `${source}:${destination}`]), {

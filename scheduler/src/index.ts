@@ -13,6 +13,7 @@ import {
   readBranchSha,
   readDevelopSha,
   readOrigin,
+  retainCandidate,
   setOrigin,
 } from './git-repo.ts'
 import { bareRepo, dashboardDistRoot, hookSourceRoot, repositoryRoot } from './paths.ts'
@@ -29,8 +30,14 @@ import {
   recentRunsForRepository,
   saveRepository,
   listRunsForRepository,
+  cancelQueuedRun,
+  retryRun,
+  savePromotion,
+  pendingPromotion,
+  finishPromotion,
 } from './db.ts'
-import { startWorker } from './worker.ts'
+import { cancelActiveRun, startWorker } from './worker.ts'
+import { assertRemoteUnchanged, branchSync, remoteSha, synchronizeBranch, synchronizeDevelop } from './synchronization.ts'
 
 const ORIGIN_HELP = 'Save the GitHub remote on the setup screen.'
 const GITHUB_REMOTE = /^(?:git@[\w.-]+:[\w./~-]+|ssh:\/\/git@[\w.-]+\/[\w./~-]+|https:\/\/[\w.-]+\/[\w./~-]+)(?:\.git)?$/
@@ -80,7 +87,8 @@ function discoverExistingRepositories() {
     try {
       if (!statSync(join(path, 'HEAD')).isFile()) continue
       const origin = readOrigin(path)
-      saveRepository({ id, name: id, barePath: path, origin })
+      const existing = getRepository(id)
+      saveRepository({ id, name: existing?.name ?? id, barePath: path, origin })
     } catch {
       // Ignore folders that are not initialized bare repositories.
     }
@@ -93,6 +101,13 @@ function repositoryFor(id: unknown) {
 }
 
 async function snapshotFor(repository: NonNullable<ReturnType<typeof getRepository>>) {
+  let syncError: string | null = null
+  try {
+    await synchronizeDevelop(repository.barePath)
+    await synchronizeBranch(repository.barePath, 'main')
+  } catch (error) {
+    syncError = error instanceof Error ? error.message : String(error)
+  }
   const snapshot = await currentRepoSnapshot(repository.barePath, repository.id, repository.name)
   const runs = recentRunsForRepository(repository.id)
   const branches = snapshot.branches.map((branch) => {
@@ -107,7 +122,13 @@ async function snapshotFor(repository: NonNullable<ReturnType<typeof getReposito
     else if (latest?.status === 'passed') status = 'passed'
     return { ...branch, status }
   })
-  return { ...snapshot, barePath: repository.barePath, maxBranchDrift: MAX_BRANCH_DRIFT, branches }
+  return {
+    ...snapshot, barePath: repository.barePath, maxBranchDrift: MAX_BRANCH_DRIFT, branches,
+    githubDevelop: branchSync(repository.barePath, 'develop'),
+    githubMain: branchSync(repository.barePath, 'main'),
+    syncError,
+    pendingReset: pendingPromotion(repository.id) ?? null,
+  }
 }
 
 discoverExistingRepositories()
@@ -146,11 +167,15 @@ app.post('/repositories', async (request, reply) => {
     execFileSync('git', ['init', '--bare', '-b', 'main', path], { stdio: 'ignore' })
     initialized = true
     execFileSync('git', [`--git-dir=${path}`, 'remote', 'add', 'origin', github], { stdio: 'ignore' })
-    execFileSync('git', [`--git-dir=${path}`, 'fetch', '--prune', 'origin', '+refs/heads/*:refs/heads/*'], { stdio: 'ignore', env: { ...process.env, GIT_TERMINAL_PROMPT: '0' } })
+    execFileSync('git', [`--git-dir=${path}`, 'fetch', '--prune', 'origin', '+refs/heads/*:refs/remotes/origin/*'], { stdio: 'ignore', env: { ...process.env, GIT_TERMINAL_PROMPT: '0' } })
+    for (const branch of ['main', 'develop']) {
+      const sha = remoteSha(path, branch as 'main' | 'develop')
+      if (sha) execFileSync('git', [`--git-dir=${path}`, 'update-ref', `refs/heads/${branch}`, sha], { stdio: 'ignore' })
+    }
     if (!readBranchSha(path, 'main')) {
       const head = execFileSync('git', [`--git-dir=${path}`, 'ls-remote', '--symref', 'origin', 'HEAD'], { encoding: 'utf8' })
         .match(/ref: refs\/heads\/([^\s]+)/)?.[1]
-      const headSha = head ? readBranchSha(path, head) : null
+      const headSha = head ? execFileSync('git', [`--git-dir=${path}`, 'rev-parse', `refs/remotes/origin/${head}`], { encoding: 'utf8' }).trim() : null
       if (headSha) execFileSync('git', [`--git-dir=${path}`, 'update-ref', 'refs/heads/main', headSha], { stdio: 'ignore' })
     }
     const main = readBranchSha(path, 'main')
@@ -159,8 +184,8 @@ app.post('/repositories', async (request, reply) => {
       copyFileSync(join(hookSourceRoot, hook), join(path, 'hooks', hook))
       execFileSync('chmod', ['+x', join(path, 'hooks', hook)])
     }
-      const repository = saveRepository({ id, name, barePath: path, origin: github })
-      clearRepoCache()
+    const repository = saveRepository({ id, name, barePath: path, origin: github })
+    clearRepoCache()
     return reply.code(201).send({ repository: await snapshotFor(repository!) })
   } catch (error) {
     if (initialized) rmSync(path, { recursive: true, force: true })
@@ -181,6 +206,99 @@ app.get<{ Params: { id: string } }>('/runs/:id', async (request, reply) => {
   return { run }
 })
 
+app.post<{ Params: { id: string } }>('/runs/:id/cancel', async (request, reply) => {
+  const run = getRun(request.params.id)
+  if (!run) return reply.code(404).send({ error: 'run not found' })
+  if (!cancelQueuedRun(run.id) && !cancelActiveRun(run.id)) return reply.code(409).send({ error: 'run cannot be canceled' })
+  return { canceled: run.id }
+})
+
+app.post<{ Params: { id: string } }>('/runs/:id/retry', async (request, reply) => {
+  const run = getRun(request.params.id)
+  if (!run) return reply.code(404).send({ error: 'run not found' })
+  const repository = repositoryFor(run.repository)
+  if (!repository) return reply.code(404).send({ error: 'repository not found' })
+  try { await synchronizeDevelop(repository.barePath, true) }
+  catch (error) { return reply.code(502).send({ error: `GitHub synchronization failed: ${String(error)}` }) }
+  const base = run.target === 'main' ? readBranchSha(repository.barePath, 'main') : run.target === 'reconcile' ? remoteSha(repository.barePath, 'develop') : readDevelopSha(repository.barePath)
+  const head = run.target === 'main' || run.target === 'reconcile' ? readDevelopSha(repository.barePath) : readBranchSha(repository.barePath, run.branch)
+  if (base !== run.baseSha || head !== run.headSha) return reply.code(409).send({ error: 'branch SHAs moved; create a new validation' })
+  const next = retryRun(run.id)
+  if (!next) return reply.code(409).send({ error: 'run has no reusable candidate' })
+  return reply.code(201).send({ run: next })
+})
+
+app.post('/sync', async (request, reply) => {
+  const body = request.body as { repository?: unknown } | null
+  const repository = repositoryFor(body?.repository)
+  if (!repository) return reply.code(404).send({ error: 'repository not found' })
+  try {
+    await synchronizeDevelop(repository.barePath, true)
+    await synchronizeBranch(repository.barePath, 'main')
+    return snapshotFor(repository)
+  } catch (error) { return reply.code(502).send({ error: `GitHub synchronization failed: ${String(error)}` }) }
+})
+
+app.post('/reconcile', async (request, reply) => {
+  const body = request.body as { repository?: unknown } | null
+  const repository = repositoryFor(body?.repository)
+  if (!repository) return reply.code(404).send({ error: 'repository not found' })
+  const path = repository.barePath
+  try { await synchronizeDevelop(path, true) }
+  catch (error) { return reply.code(502).send({ error: `GitHub synchronization failed: ${String(error)}` }) }
+  const sync = branchSync(path, 'develop')
+  if (sync.relation !== 'diverged' || !sync.local || !sync.github) return reply.code(409).send({ error: 'develop is not diverged' })
+  const merged = await createTemporaryMerge({ bareRepo: path, baseSha: sync.github, headSha: sync.local })
+  if ('conflict' in merged) return reply.code(409).send({ error: 'reconciliation has merge conflicts; resolve in your working copy' })
+  retainCandidate(path, merged.sha)
+  const run = recordCandidate({ repository: repository.id, ref: 'refs/heads/develop', oldSha: sync.github,
+    newSha: merged.sha, baseSha: sync.github, headSha: sync.local, candidateSha: merged.sha,
+    target: 'reconcile', status: 'queued' })
+  return reply.code(201).send({ run })
+})
+
+app.post('/reconciliations', async (request, reply) => {
+  const body = request.body as { runId?: unknown } | null
+  const run = typeof body?.runId === 'string' ? getRun(body.runId) : undefined
+  if (!run || run.target !== 'reconcile' || run.status !== 'passed' || !run.candidateSha) return reply.code(409).send({ error: 'passed reconciliation is required' })
+  const repository = repositoryFor(run.repository)
+  if (!repository) return reply.code(404).send({ error: 'repository not found' })
+  const path = repository.barePath
+  try {
+    await synchronizeDevelop(path, true)
+    assertRemoteUnchanged(path, 'develop', run.baseSha)
+    if (readDevelopSha(path) !== run.headSha) return reply.code(409).send({ error: 'local develop moved; revalidate' })
+    compareAndSwapDevelop(path, run.candidateSha, run.headSha!)
+    clearRepoCache()
+    return reply.code(201).send({ develop: run.candidateSha })
+  } catch (error) { return reply.code(409).send({ error: String(error) }) }
+})
+
+app.post('/reset-develop', async (request, reply) => {
+  const body = request.body as { repository?: unknown } | null
+  const repository = repositoryFor(body?.repository)
+  if (!repository) return reply.code(404).send({ error: 'repository not found' })
+  const promotion = pendingPromotion(repository.id)
+  if (!promotion) return reply.code(409).send({ error: 'no pending promotion' })
+  const path = repository.barePath
+  try {
+    await synchronizeDevelop(path, true)
+    await synchronizeBranch(path, 'main')
+    assertRemoteUnchanged(path, 'develop', promotion.githubDevelopSha)
+    assertRemoteUnchanged(path, 'main', promotion.mainSha)
+    if (readDevelopSha(path) !== promotion.developSha || readBranchSha(path, 'main') !== promotion.mainSha) {
+      return reply.code(409).send({ error: 'local branches moved since promotion' })
+    }
+    const lease = `--force-with-lease=refs/heads/develop:${promotion.githubDevelopSha ?? ''}`
+    const result = execFileSync('git', [`--git-dir=${path}`, 'push', lease, 'origin', `${promotion.mainSha}:refs/heads/develop`],
+      { encoding: 'utf8', env: { ...process.env, GIT_TERMINAL_PROMPT: '0' } })
+    compareAndSwapDevelop(path, promotion.mainSha, promotion.developSha)
+    finishPromotion(repository.id)
+    clearRepoCache()
+    return reply.code(201).send({ develop: promotion.mainSha, result })
+  } catch (error) { return reply.code(409).send({ error: `reset blocked: ${String(error)}` }) }
+})
+
 app.post('/events', async (request, reply) => {
   const parsed = asPush(request.body as PushBody)
   if (typeof parsed === 'string') return reply.code(400).send({ error: parsed })
@@ -191,6 +309,16 @@ app.post('/events', async (request, reply) => {
     return reply.code(400).send({ error: 'that branch moves only from the dashboard' })
   }
   if (parsed.newSha === DELETED) return { ignored: 'branch delete' }
+
+  try {
+    const sync = await synchronizeDevelop(repoPath, true)
+    if (sync.relation === 'diverged') return reply.code(409).send({ error: 'develop diverged from GitHub; validate a reconciliation first' })
+  } catch (error) {
+    return reply.code(502).send({ error: `GitHub synchronization failed: ${String(error)}` })
+  }
+  if (readBranchSha(repoPath, parsed.ref.slice('refs/heads/'.length)) !== parsed.newSha) {
+    return reply.code(409).send({ error: 'branch moved since this push event' })
+  }
 
   const developSha = readDevelopSha(repoPath)
   if (!developSha) {
@@ -235,6 +363,7 @@ app.post('/events', async (request, reply) => {
     return reply.code(201).send({ run })
   }
 
+  retainCandidate(repoPath, merged.sha)
   const run = recordCandidate({
     ...parsed,
     newSha: merged.sha.toLowerCase(),
@@ -244,6 +373,22 @@ app.post('/events', async (request, reply) => {
     status: 'queued',
   })
   return reply.code(201).send({ run })
+})
+
+app.post('/runs/manual', async (request, reply) => {
+  const body = request.body as { repository?: unknown; branch?: unknown } | null
+  const repository = repositoryFor(body?.repository)
+  const branch = body?.branch
+  if (!repository) return reply.code(404).send({ error: 'repository not found' })
+  if (typeof branch !== 'string' || !REF.test(`refs/heads/${branch}`) || branch === 'main' || branch === 'develop') {
+    return reply.code(400).send({ error: 'choose a feature branch' })
+  }
+  const sha = readBranchSha(repository.barePath, branch)
+  if (!sha) return reply.code(404).send({ error: 'branch not found' })
+  const response = await app.inject({ method: 'POST', url: '/events', payload: {
+    repository: repository.id, ref: `refs/heads/${branch}`, oldSha: DELETED, newSha: sha,
+  } })
+  return reply.code(response.statusCode).send(response.json())
 })
 
 app.post('/merges', async (request, reply) => {
@@ -259,6 +404,11 @@ app.post('/merges', async (request, reply) => {
   if (run.target === 'main') {
     return reply.code(409).send({ error: 'this run promotes main. Use Push main to GitHub' })
   }
+  if (run.target === 'reconcile') return reply.code(409).send({ error: 'Use Reconcile develop for this run' })
+  try {
+    const sync = await synchronizeDevelop(repoPath, true)
+    if (sync.relation === 'diverged') return reply.code(409).send({ error: 'develop diverged from GitHub; reconcile first' })
+  } catch (error) { return reply.code(502).send({ error: `GitHub synchronization failed: ${String(error)}` }) }
   if (run.status !== 'passed' || run.trigger !== 'candidate') {
     return reply.code(409).send({ error: 'run is not a passed merge candidate' })
   }
@@ -305,6 +455,11 @@ app.post('/main', async (request, reply) => {
   const repository = repositoryFor(body?.repository) ?? listRepositories()[0]
   if (!repository) return reply.code(404).send({ error: 'repository not found' })
   const repoPath = repository.barePath
+  try {
+    const develop = await synchronizeDevelop(repoPath, true)
+    const main = await synchronizeBranch(repoPath, 'main')
+    if (develop.relation === 'diverged' || main.relation === 'diverged') return reply.code(409).send({ error: 'GitHub branch diverged; reconcile before validation' })
+  } catch (error) { return reply.code(502).send({ error: `GitHub synchronization failed: ${String(error)}` }) }
   const mainSha = readBranchSha(repoPath, 'main')
   const developSha = readDevelopSha(repoPath)
   if (!mainSha || !developSha) {
@@ -327,6 +482,7 @@ app.post('/main', async (request, reply) => {
     return reply.code(201).send({ run })
   }
   const sha = merged.sha.toLowerCase()
+  retainCandidate(repoPath, sha)
   const run = recordCandidate({
     repository: repository.id,
     ref: 'refs/heads/develop',
@@ -351,6 +507,12 @@ app.post('/pushes', async (request, reply) => {
   const repoPath = repository.barePath
   const origin = readOrigin(repoPath)
   if (!origin) return reply.code(409).send({ error: ORIGIN_HELP })
+
+  try {
+    const develop = await synchronizeDevelop(repoPath, true)
+    const main = await synchronizeBranch(repoPath, 'main')
+    if (develop.relation === 'diverged' || main.relation === 'diverged') return reply.code(409).send({ error: 'GitHub branch diverged; reconcile before pushing' })
+  } catch (error) { return reply.code(502).send({ error: `GitHub synchronization failed: ${String(error)}` }) }
 
   if (body.branch === 'develop') {
     const developSha = readDevelopSha(repoPath)
@@ -379,6 +541,7 @@ app.post('/pushes', async (request, reply) => {
       return reply.code(409).send({ error: 'GitHub main updated, but local main moved during the push' })
     }
   }
+  savePromotion(repository.id, candidate, developSha, remoteSha(repoPath, 'develop'))
   clearRepoCache()
   return reply.code(201).send({ sha: candidate, remote: origin })
 })
@@ -412,4 +575,4 @@ app.get('/*', async (request, reply) => {
 startWorker()
 
 const port = 3001
-await app.listen({ host: '127.0.0.1', port })
+await app.listen({ host: process.env.LOCAL_CI_HOST ?? '127.0.0.1', port })
