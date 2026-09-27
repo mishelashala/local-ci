@@ -1277,3 +1277,32 @@ The project is successful when:
 - running the workflow no longer depends on GitHub Actions minutes.
 
 The system should be useful before it becomes sophisticated.
+# Autonomous integration amendment (27 September 2026)
+
+This section is the current contract. It supersedes any conflicting manual merge, post-merge full rerun, and promotion wording later in this document. The later sections preserve the original design history and its still-applicable safety constraints.
+
+## Agent handoff
+
+Each agent works in its own Git worktree and pushes a feature branch to its repository's local `ci` remote. The branch name is the task identifier unless a richer task registry is added later. A GitHub PR is optional for discussion or an audit trail; it is not the local CI gate. `git push ci feat/task` creates a temporary merge of that branch tip with the latest local `develop` and runs the applicable `.local-ci/workflows` PR checks on the exact merge commit. GitHub workflows are a fallback only when the local directory is absent.
+
+The scheduler records the individual YAML files selected for the run. Each has a queued, running, passed, failed, or canceled state, exit code, and filtered logs. Agents can poll the run or use `scripts/ci-wait.mjs` and repair their own failures. Local CI does not presume it can resume or send messages to a suspended agent process.
+
+## Serial integration
+
+Run one resource-intensive test suite at a time across connected repositories. A failed run stays failed and the queue continues. A newer push on the same branch supersedes its older queued/passed result. Before integrating a passed run, check that the branch tip and `develop` still match the tested head/base. An exact compare-and-swap advances local `develop` to the tested merge commit; no click or duplicate full-suite run is required. If the base moved, rebuild the temporary merge and retest the unchanged agent branch. Never silently rewrite a feature branch. A conflict or failed test stays out of `develop` and is reported to the owning task.
+
+An optional `.local-ci/workflows/develop-smoke.yml` with `on: push` for `develop` may run a short health check immediately after integration. It takes priority over waiting candidates and pauses further integration and staging pushes. If it fails, roll local `develop` back only when it still points to that exact candidate SHA; mark the candidate defective. If the ref moved, block integration and require explicit recovery. A project with no smoke workflow has no automatic runtime health/rollback signal; its passing candidate checks are its only local gate.
+
+## Manual staging and production
+
+The user decides when to send staging and production snapshots to GitHub. Push develop to GitHub sends an exact tested local SHA while briefly freezing local integration for that repository. A push failure must not advance the GitHub branch silently. GitHub synchronization and divergence checks remain mandatory.
+
+Selecting Validate develop → main starts a durable, per-repository promotion freeze. Record the `develop` SHA before validating; feature pushes can queue but cannot integrate. Only the tested snapshot may be pushed to GitHub main. After main is pushed, offer Reset develop → main or Release promotion. The reset checks the remembered GitHub and local SHAs, uses a remote force-with-lease and a local compare-and-swap, and can resume after a crash between the remote and local updates. Conflicting state blocks automatic integration. Releasing without reset expires that reset opportunity before newer candidates integrate. Once the freeze ends, waiting candidates are rebuilt and retested against the current `develop`. Other repositories continue throughout.
+
+Promotion, GitHub staging push, GitHub main push, and the post-promotion reset remain manual. Automatic integration only changes **local** develop.
+
+## Verification boundary
+
+The scheduler must be tested with real Git/SQLite races and fake `act` workflow events, then accepted on the intended Docker host with the actual rxrise-server Postgres checks and rxrise-marketplaces Playwright checks. Passing YAML checks does not establish product correctness or production health. Do not remove GitHub Actions until those real runs and the recovery drills pass.
+
+---

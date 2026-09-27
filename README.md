@@ -30,37 +30,47 @@ In a working copy, use the exact bare path displayed in the dashboard:
 
 A push notifies the scheduler. If a push arrived while the scheduler was offline, click Run beside that branch after restarting. The runner clones the retained candidate SHA into a disposable checkout, runs `act pull_request` against `.local-ci/workflows/*.yml` (falling back to `.github/workflows` if the local directory is absent), records streamed logs and exit status in SQLite, and deletes the checkout. It simulates a PR from the pushed branch to `develop` on the exact temporary merge commit. Branch and path filters select applicable workflows; a repository without an open/synchronize PR test workflow fails instead of appearing green. A workflow excluded by its path filters has no checks, as on GitHub. The GitHub-only PR-closed reset workflow is excluded. Failed Playwright upload-artifact steps can write to `scheduler/data/work/artifacts/<run-id>`.
 
-`git push ci feat/branch` automatically creates a local candidate and starts validation. It does not open a GitHub pull request or merge the branch. The dashboard's Merge to develop button is the explicit merge; the simulated PR event exists only to run the workflow jobs defined in YAML.
+The run detail panel lists each selected YAML with its live status and exit code. Click a workflow to see only its logs, or All logs for the complete run. The same data is available through `GET /api/runs/:id/workflows` and `GET /api/runs/:id/logs?workflow=<encoded-path>`.
+
+`git push ci feat/branch` creates a local candidate and starts validation. A passing run automatically advances local `develop` to that exact tested merge commit. It does not open or merge a GitHub pull request. Failed runs leave `develop` unchanged and the worker proceeds to the next item. A newer push supersedes an older pending result from the same branch. When another candidate moves `develop`, queued candidates are rebuilt and retested on the new base. A conflict fails and must go back to the agent; local-ci never rewrites an agent branch.
+
+An agent can poll its result with `node scripts/ci-wait.mjs <repository-id> <branch> [head-sha]`; exit 0 means integrated, 1 means failed, and 2 means timed out. `GET /api/runs/:id/result` returns machine-readable run state, failure lines, artifact directory and logs URL. The task identifier currently defaults to the feature branch name. The agent must run this command itself and repair its own failures; local-ci does not send messages to a suspended agent process.
 
 The current `rxrise-server` local workflow runs architecture, migration undo, and backend tests with a Postgres service and Node 22/pnpm 10.15.0. The `rxrise-marketplaces` local workflows run architecture, unit, and Playwright tests with Node 20/pnpm 10.15.0. They are copied from each project's current `develop` YAML; edit `.local-ci/workflows` independently as the local pipeline evolves. Commit these files to the project before testing the branch. `act` uses the host Docker daemon for fresh runners and workflow service containers. It reuses locally cached images; a first run downloads missing images. LOCAL_CI_ACT_PLATFORM selects the ubuntu-latest image, LOCAL_CI_CONTAINER_ARCH selects its architecture, and LOCAL_CI_RUN_TIMEOUT_MINUTES defaults to 45.
 
 ## Promotion and recovery
 
-1. A feature push validates a temporary merge against current develop. Ready to merge requires a passed candidate with unchanged source/base SHAs and at most 10 commits of drift (configurable with LOCAL_CI_MAX_BRANCH_DRIFT). Click Merge to develop. Local CI automatically queues the same complete test suite again against the now-current develop SHA; only after that verification passes does Push to develop become available. A failed post-merge run can be retried, but cannot authorize a GitHub push.
-2. Click Validate develop → main to validate the exact proposed main commit. Once passed, click Push main to GitHub. This is a local promotion gate, not a GitHub pull request.
-3. After main is pushed, click Reset develop to main. This explicitly moves GitHub and local develop to that promoted SHA. The remote update uses a force-with-lease guard on the remembered GitHub develop SHA and refuses changed local refs. It never happens automatically.
+1. Each passing candidate automatically integrates into local `develop`. Click Push to develop when you want to send that exact tested snapshot to GitHub staging. The push temporarily freezes integration for that repository; other projects continue.
+2. Click Validate develop → main to freeze that repository and test a fixed release snapshot. Once passed, click Push main to GitHub. If validation fails, the freeze releases. Push main is a local promotion gate, not a GitHub pull request.
+3. After main is pushed, click Reset develop to main, or Release promotion to keep the current develop history. Reset uses a GitHub force-with-lease guard and an exact local compare-and-swap. If GitHub reset succeeds but local update is interrupted, retry Reset develop; the operation recognizes the already-reset remote. A conflicting local change blocks integration for explicit recovery. The freeze persists across scheduler restarts. Waiting feature branches are retested after it releases.
+
+Optionally define `.local-ci/workflows/develop-smoke.yml` with `on: push` for `develop`. This short workflow runs ahead of other candidates after each local integration, pauses staging and further merges, and rolls back the exact local commit if it fails. A moved ref blocks rollback and needs explicit recovery. Neither project has a real app health smoke workflow configured yet, so there is no automatic health rollback until you add checks that can detect the broken app.
 
 The dashboard fetches GitHub refs. A strictly ahead GitHub branch fast-forwards local develop/main. Local ahead commits remain intact. Divergence blocks normal validation and pushing: click Validate reconciliation to run the full workflow against a temporary merge of GitHub and local develop, then click Reconcile develop after it passes. Push the resulting develop separately. Resolve conflicts in a working copy.
 
-When a feature branch exceeds the drift limit, Sync/Rebase shows commands for an explicit rebase in the working copy and a guarded push back to ci. The scheduler never rewrites feature branches itself. Cancel handles queued/running runs; Retry reuses a candidate only if its source and base SHAs still match; Run makes a new validation. Interrupted jobs become failed on restart and can be retried. Results and logs persist in SQLite.
+When a feature branch exceeds the drift limit at ingress, Sync/Rebase shows commands for an explicit rebase in the working copy and a guarded push back to ci. The scheduler never rewrites feature branches itself. Cancel handles queued/running runs; Retry reuses a candidate only if its source and base SHAs still match; Run makes a new validation. Interrupted jobs become failed on restart and can be retried. Results and logs persist in SQLite. There is no automatic failure retry or agent notification transport; agents should use the wait command.
 
 ## Done and missing
 
 | Area | State |
 | --- | --- |
 | Multiple projects, selector, branch status, per-project history/logs | Done |
+| Per-YAML workflow statuses and log drilldown | Done; full Docker job behavior needs acceptance run |
 | One command and one HTTP server for dashboard and API | Done |
-| Exact merge candidate, serial SQLite queue, stale SHA gates | Done |
-| Local workflow selection, PR event, Postgres/Playwright via act, isolated checkout, logs, timeout/cancel, post-merge verification | Implemented; needs actual Docker/workflow acceptance run |
+| Exact merge candidate, serial SQLite queue, automatic integration, latest-base retesting, superseded pushes | Implemented; integration test passes |
+| Local workflow selection, PR event, Postgres/Playwright via act, isolated checkout, logs, timeout/cancel | Implemented; needs actual Docker/workflow acceptance run |
 | GitHub sync, divergence reconciliation, explicit guarded pushes/reset | Implemented; needs test with your GitHub permissions and branch rules |
-| Manual enqueue, cancel, retry, restart recovery | Done; interrupted jobs require manual retry |
-| GitHub PR creation/review, automatic feature rebase, built-in secret management | Outside V1; use GitHub and working copy, configure act secrets externally |
+| Durable per-repository promotion freeze, staging snapshot, guarded reset and recovery | Implemented; needs live GitHub acceptance run |
+| Agent wait command, task branch result, manual enqueue, cancel, retry | Done; interrupted jobs require manual retry |
+| Optional priority post-merge smoke and safe rollback | Implemented; no project health YAML configured yet and needs Docker acceptance run |
+| Message delivery to suspended agents, automatic feature rebase, built-in secret management | Missing; use the agent wait command and working copy, configure act secrets externally |
+| Sample app | Removed; connect your real repositories in the dashboard |
 
 ## First test
 
 1. Start Docker; verify `docker info` and `act --version` (Compose installs act inside its container). Start Local CI; connect rxrise-server and rxrise-marketplaces. Ensure their `.local-ci/workflows` files have been merged into each develop branch or are present on the feature branch you push.
-2. In either project's working copy, `git remote add ci <path displayed in dashboard>`, then `git push ci feat/some-branch`. Inspect the PR event, selected workflows, candidate SHA, individual job output, and pass/fail. A deliberately failing test must prevent Merge to develop. Check the Postgres service and Playwright artifact path on failure.
-3. Merge a passed candidate locally; wait for the second complete run to pass before Push to develop becomes enabled. Push develop to GitHub, then `git fetch origin && git pull --ff-only origin develop` in your working copy. Validate develop against main, push main, and explicitly reset develop if desired.
+2. In either project's working copy, `git remote add ci <path displayed in dashboard>`, then `git push ci feat/some-branch`. Wait for automatic integration with `node /path/to/local-ci/scripts/ci-wait.mjs rxrise-server feat/some-branch <head-sha>`. Check the PR event, selected workflows, candidate SHA, and individual job output. A deliberately failing test must leave develop unchanged. Check the Postgres service and Playwright artifact path on failure.
+3. Push the healthy local develop snapshot to GitHub when staging is desired, then `git fetch origin && git pull --ff-only origin develop` in your working copy. Validate develop against main, push main, and explicitly reset or release promotion. Submit another branch during promotion and verify that it waits and is retested after reset.
 4. Add a second repository and check the selector and shared queue. Change GitHub develop outside Local CI to test fast-forward or divergence before using production branches.
 
-INTENT.md describes the target behavior. This development environment has no Docker or act binary, so the real container/GitHub deployment flow remains an acceptance test. The TypeScript builds and a local scheduler/queue smoke run were exercised.
+INTENT.md describes the target behavior. This development environment has no Docker or act binary, so the real Postgres/Playwright container and GitHub deployment flow remains an acceptance test. The TypeScript builds, fake-act workflow selection, and a real-Git/SQLite integration test were exercised. Do not disable GitHub Actions until both project workflows pass on the deployment machine.
