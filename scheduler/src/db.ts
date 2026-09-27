@@ -4,13 +4,23 @@ import { fileURLToPath } from 'node:url'
 import Database from 'better-sqlite3'
 import { asc, desc, eq } from 'drizzle-orm'
 import { drizzle } from 'drizzle-orm/better-sqlite3'
-import { logs, runs } from './schema.ts'
+import { logs, repositories, runs } from './schema.ts'
 
 const dataDir = join(dirname(fileURLToPath(import.meta.url)), '..', 'data')
 mkdirSync(dataDir, { recursive: true })
 
 const sqlite = new Database(join(dataDir, 'ci.sqlite'))
 sqlite.pragma('journal_mode = WAL')
+sqlite.exec(`
+  CREATE TABLE IF NOT EXISTS repositories (
+    id TEXT PRIMARY KEY,
+    name TEXT NOT NULL,
+    bare_path TEXT NOT NULL,
+    origin TEXT,
+    created_at INTEGER NOT NULL
+  )
+`)
+
 sqlite.exec(`
   CREATE TABLE IF NOT EXISTS runs (
     id TEXT PRIMARY KEY,
@@ -69,50 +79,50 @@ export type CandidateInput = {
   logLine?: string
 }
 
-function staleCandidates(developSha: string | null, mainSha: string | null) {
+function staleCandidates(repository: string, developSha: string | null, mainSha: string | null) {
   if (developSha === null) {
     sqlite
       .prepare(
         `UPDATE runs SET status = 'stale'
-         WHERE trigger = 'candidate'
+         WHERE repository = ? AND trigger = 'candidate'
            AND (target IS NULL OR target = 'develop')
            AND status IN ('queued', 'passed')
            AND base_sha IS NOT NULL`,
       )
-      .run()
+      .run(repository)
   } else {
     sqlite
       .prepare(
         `UPDATE runs SET status = 'stale'
-         WHERE trigger = 'candidate'
+         WHERE repository = ? AND trigger = 'candidate'
            AND (target IS NULL OR target = 'develop')
            AND status IN ('queued', 'passed')
            AND base_sha IS NOT ?
            AND NOT (status = 'passed' AND candidate_sha IS ?)`,
       )
-      .run(developSha, developSha)
+      .run(repository, developSha, developSha)
   }
 
   if (mainSha === null || developSha === null) {
     sqlite
       .prepare(
         `UPDATE runs SET status = 'stale'
-         WHERE trigger = 'candidate' AND target = 'main' AND status IN ('queued', 'passed')`,
+         WHERE repository = ? AND trigger = 'candidate' AND target = 'main' AND status IN ('queued', 'passed')`,
       )
-      .run()
+      .run(repository)
     return
   }
 
   sqlite
     .prepare(
       `UPDATE runs SET status = 'stale'
-       WHERE trigger = 'candidate'
+       WHERE repository = ? AND trigger = 'candidate'
          AND target = 'main'
          AND status IN ('queued', 'passed')
          AND (base_sha IS NOT ? OR head_sha IS NOT ?)
          AND NOT (status = 'passed' AND candidate_sha IS ?)`,
     )
-    .run(mainSha, developSha, mainSha)
+    .run(repository, mainSha, developSha, mainSha)
 }
 
 export function recordCandidate(input: CandidateInput) {
@@ -158,32 +168,59 @@ export function markRunStale(id: string) {
   sqlite.prepare(`UPDATE runs SET status = 'stale' WHERE id = ? AND status IN ('queued', 'passed')`).run(id)
 }
 
-export function hasPassedCandidate(sha: string) {
+export function hasPassedCandidate(repository: string, sha: string) {
   const row = sqlite
     .prepare(
       `SELECT id FROM runs
-       WHERE status = 'passed' AND trigger = 'candidate' AND candidate_sha = ?
+       WHERE repository = ? AND status = 'passed' AND trigger = 'candidate' AND candidate_sha = ?
          AND (target IS NULL OR target = 'develop')
        LIMIT 1`,
     )
-    .get(sha) as { id: string } | undefined
+    .get(repository, sha) as { id: string } | undefined
   return row !== undefined
 }
 
-export function findPassedMain(mainSha: string, developSha: string): string | undefined {
+export function findPassedMain(repository: string, mainSha: string, developSha: string): string | undefined {
   const row = sqlite
     .prepare(
       `SELECT candidate_sha AS sha FROM runs
-       WHERE status = 'passed' AND trigger = 'candidate' AND target = 'main'
+       WHERE repository = ? AND status = 'passed' AND trigger = 'candidate' AND target = 'main'
          AND base_sha = ? AND head_sha = ? AND candidate_sha IS NOT NULL
        ORDER BY created_at DESC LIMIT 1`,
     )
-    .get(mainSha, developSha) as { sha: string } | undefined
+    .get(repository, mainSha, developSha) as { sha: string } | undefined
   return row?.sha
 }
 
 export function listRuns() {
   return db.select().from(runs).orderBy(desc(runs.createdAt)).limit(20).all()
+}
+
+export function listRunsForRepository(repository: string) {
+  return db.select().from(runs).where(eq(runs.repository, repository)).orderBy(desc(runs.createdAt)).limit(100).all()
+}
+
+export function recentRunsForRepository(repository: string) {
+  return db.select().from(runs).where(eq(runs.repository, repository)).orderBy(desc(runs.createdAt)).limit(100).all()
+}
+
+export function listRepositories() {
+  return db.select().from(repositories).orderBy(asc(repositories.name)).all()
+}
+
+export function getRepository(id: string) {
+  return db.select().from(repositories).where(eq(repositories.id, id)).get()
+}
+
+export function saveRepository(input: { id: string; name: string; barePath: string; origin: string | null }) {
+  const existing = getRepository(input.id)
+  const row = { ...input, createdAt: existing?.createdAt ?? Date.now() }
+  if (existing) {
+    db.update(repositories).set({ name: row.name, barePath: row.barePath, origin: row.origin }).where(eq(repositories.id, row.id)).run()
+  } else {
+    db.insert(repositories).values(row).run()
+  }
+  return getRepository(input.id)
 }
 
 export function getRun(id: string) {
@@ -213,7 +250,11 @@ export function finishRun(runId: string, status: 'passed' | 'failed' | 'canceled
 
 export function claimNextRun(developSha: string | null, mainSha: string | null) {
   const claim = sqlite.transaction(() => {
-    staleCandidates(developSha, mainSha)
+    const firstQueued = sqlite.prepare(`SELECT id, repository FROM runs WHERE status = 'queued' ORDER BY created_at ASC LIMIT 1`).get() as
+      | { id: string; repository: string }
+      | undefined
+    if (!firstQueued) return undefined
+    staleCandidates(firstQueued.repository, developSha, mainSha)
     const running = sqlite.prepare(`SELECT id FROM runs WHERE status = 'running' LIMIT 1`).get()
     if (running) return undefined
     const next = sqlite.prepare(`SELECT id FROM runs WHERE status = 'queued' ORDER BY created_at ASC LIMIT 1`).get() as
@@ -223,6 +264,22 @@ export function claimNextRun(developSha: string | null, mainSha: string | null) 
     const updated = sqlite
       .prepare(`UPDATE runs SET status = 'running', started_at = ? WHERE id = ? AND status = 'queued'`)
       .run(Date.now(), next.id)
+    if (updated.changes !== 1) return undefined
+    return getRun(next.id)
+  })
+  return claim()
+}
+
+export function claimNextRunForRepository(repository: string, developSha: string | null, mainSha: string | null) {
+  const claim = sqlite.transaction(() => {
+    staleCandidates(repository, developSha, mainSha)
+    const running = sqlite.prepare(`SELECT id FROM runs WHERE status = 'running' LIMIT 1`).get()
+    if (running) return undefined
+    const next = sqlite.prepare(`SELECT id FROM runs WHERE status = 'queued' AND repository = ? ORDER BY created_at ASC LIMIT 1`).get(repository) as
+      | { id: string }
+      | undefined
+    if (!next) return undefined
+    const updated = sqlite.prepare(`UPDATE runs SET status = 'running', started_at = ? WHERE id = ? AND status = 'queued'`).run(Date.now(), next.id)
     if (updated.changes !== 1) return undefined
     return getRun(next.id)
   })

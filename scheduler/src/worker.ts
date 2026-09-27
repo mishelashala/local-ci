@@ -2,13 +2,11 @@ import { spawn } from 'node:child_process'
 import { mkdirSync, rmSync } from 'node:fs'
 import { join } from 'node:path'
 import type { Readable } from 'node:stream'
-import { appendLog, claimNextRun, finishRun } from './db.ts'
+import { appendLog, claimNextRunForRepository, finishRun, getRepository, listRepositories } from './db.ts'
 import { readBranchSha, readDevelopSha } from './git-repo.ts'
-import { bareRepo, workRoot } from './paths.ts'
+import { workRoot } from './paths.ts'
 
-const SAMPLE_REPO = 'sample-app'
-
-type ClaimedRun = NonNullable<ReturnType<typeof claimNextRun>>
+type ClaimedRun = NonNullable<ReturnType<typeof claimNextRunForRepository>>
 
 function consume(stream: Readable | null, runId: string) {
   let pending = ''
@@ -65,7 +63,8 @@ async function execute(run: ClaimedRun) {
     exitCode: 1,
   }
   try {
-    if (run.repository !== SAMPLE_REPO) {
+    const repository = getRepository(run.repository)
+    if (!repository) {
       appendLog(run.id, `error: unknown repository ${run.repository}`)
       return
     }
@@ -74,7 +73,7 @@ async function execute(run: ClaimedRun) {
     rmSync(workDir, { recursive: true, force: true })
     mkdirSync(workDir, { recursive: true })
 
-    const cloneCode = await spawnLogged(run.id, 'git', ['clone', '--local', bareRepo, workDir])
+    const cloneCode = await spawnLogged(run.id, 'git', ['clone', '--local', repository.barePath, workDir])
     if (cloneCode !== 0) {
       appendLog(run.id, `error: git clone failed (${cloneCode ?? 'spawn error'})`)
       outcome.exitCode = cloneCode
@@ -121,7 +120,11 @@ export function startWorker() {
   let busy = false
   const tick = () => {
     if (busy) return
-    const run = claimNextRun(readDevelopSha(bareRepo), readBranchSha(bareRepo, 'main'))
+    const run = listRepositories().map((repository) => claimNextRunForRepository(
+      repository.id,
+      readDevelopSha(repository.barePath),
+      readBranchSha(repository.barePath, 'main'),
+    )).find((candidate) => candidate !== undefined)
     if (run === undefined) return
     busy = true
     void execute(run).finally(() => {

@@ -1,6 +1,10 @@
 export type RepoSnapshot = {
+  id: string
+  name: string
+  barePath: string
+  maxBranchDrift: number
   develop: string | null
-  branches: { name: string; sha: string }[]
+  branches: { name: string; sha: string; aheadOfDevelop: number | null; behindDevelop: number | null; status: 'ready-to-merge' | 'passed' | 'failed' | 'running' | 'queued' | 'sync-required' | 'idle' | 'ready-to-deploy' }[]
   origin: string | null
 }
 
@@ -21,11 +25,12 @@ function isSha40(value: string | null | undefined): value is string {
 
 export function mergeReady(run: MergeCandidate, repo: RepoSnapshot | null): boolean {
   if (repo === null || run.target === 'main') return false
+  const branch = repo.branches.find((item) => item.name === run.branch)
   return (
     run.status === 'passed' &&
     isSha40(run.candidateSha) &&
     repo.develop === run.baseSha &&
-    repo.branches.some((branch) => branch.name === run.branch && branch.sha === run.headSha)
+    branch?.sha === run.headSha && (branch.behindDevelop ?? 0) <= repo.maxBranchDrift
   )
 }
 

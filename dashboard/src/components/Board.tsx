@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from 'react'
-import { Box, Button, Skeleton, Typography } from '@mui/material'
+import { Box, Button, Chip, MenuItem, Select, Skeleton, Typography } from '@mui/material'
 import { useColorMode } from '../color-mode'
 import { formatAgo, mono, shortSha } from '../format'
 import { mainSha, mergeReady, pushDevelopSha, pushMainSha, type RepoSnapshot } from '../gates'
@@ -42,6 +42,8 @@ type ApiBody = {
 
 type PushNotice = { ok: true; remote: string } | { ok: false; error: string }
 
+type RepositoryOption = { id: string; name: string }
+
 const ZERO = '0000000000000000000000000000000000000000'
 
 function normalize(run: RunInput): Run {
@@ -60,10 +62,20 @@ function normalize(run: RunInput): Run {
 function normalizeRepo(body: RepoSnapshot): RepoSnapshot {
   const raw = Array.isArray(body.branches) ? body.branches : []
   return {
+    id: typeof body.id === 'string' ? body.id : '',
+    name: typeof body.name === 'string' ? body.name : 'Repository',
+    barePath: typeof body.barePath === 'string' ? body.barePath : '',
+    maxBranchDrift: Number.isInteger(body.maxBranchDrift) ? body.maxBranchDrift : 10,
     develop: body.develop ?? null,
     branches: raw.flatMap((branch) => {
       if (!branch || typeof branch.name !== 'string' || typeof branch.sha !== 'string') return []
-      return [{ name: branch.name, sha: branch.sha }]
+      return [{
+        name: branch.name,
+        sha: branch.sha,
+        aheadOfDevelop: Number.isFinite(branch.aheadOfDevelop) ? branch.aheadOfDevelop : null,
+        behindDevelop: Number.isFinite(branch.behindDevelop) ? branch.behindDevelop : null,
+        status: branch.status ?? 'idle',
+      }]
     }),
     origin: body.origin ?? null,
   }
@@ -94,6 +106,9 @@ export function Board() {
   const [runs, setRuns] = useState<Run[]>([])
   const [runsReady, setRunsReady] = useState(false)
   const [repo, setRepo] = useState<RepoSnapshot | null>(null)
+  const [repositories, setRepositories] = useState<RepositoryOption[]>([])
+  const [selectedRepositoryId, setSelectedRepositoryId] = useState('')
+  const [showSetup, setShowSetup] = useState(false)
   const [repoReady, setRepoReady] = useState(false)
   const [offline, setOffline] = useState(false)
   const [selectedId, setSelectedId] = useState<string | null>(null)
@@ -113,12 +128,30 @@ export function Board() {
       const mine = ++ticket
       void (async () => {
         try {
-          const response = await fetch('/api/runs')
+          const response = await fetch('/api/repositories')
           if (!response.ok) throw new Error(String(response.status))
-          const body = (await response.json()) as { runs?: RunInput[] }
+          const body = (await response.json()) as { repositories?: RepoSnapshot[] }
           if (cancel || mine !== ticket) return
-          if (!Array.isArray(body.runs)) throw new Error('runs')
-          setRuns(body.runs.map(normalize))
+          const snapshots = Array.isArray(body.repositories) ? body.repositories.map(normalizeRepo) : []
+          setRepositories(snapshots.map(({ id, name }) => ({ id, name })))
+          const active = snapshots.find((item) => item.id === selectedRepositoryId) ?? snapshots[0]
+          if (!active) {
+            setRepo(null)
+            setRepoReady(true)
+            setRuns([])
+            setRunsReady(true)
+            setOffline(false)
+            return
+          }
+          if (!selectedRepositoryId) setSelectedRepositoryId(active.id)
+          setRepo(active)
+          setRepoReady(true)
+          const runsResponse = await fetch(`/api/runs?repository=${encodeURIComponent(active.id)}`)
+          if (!runsResponse.ok) throw new Error(String(runsResponse.status))
+          const runsBody = (await runsResponse.json()) as { runs?: RunInput[] }
+          if (cancel || mine !== ticket) return
+          if (!Array.isArray(runsBody.runs)) throw new Error('runs')
+          setRuns(runsBody.runs.map(normalize))
           setOffline(false)
           setRunsReady(true)
           setNow(Date.now())
@@ -129,21 +162,6 @@ export function Board() {
           }
         }
       })()
-      void (async () => {
-        try {
-          const response = await fetch('/api/repo')
-          if (!response.ok) throw new Error(String(response.status))
-          const body = (await response.json()) as RepoSnapshot
-          if (cancel || mine !== ticket) return
-          setRepo(normalizeRepo(body))
-          setRepoReady(true)
-        } catch {
-          if (!cancel && mine === ticket) {
-            setRepo(null)
-            setRepoReady(true)
-          }
-        }
-      })()
     }
     void tick()
     const id = window.setInterval(() => void tick(), 1000)
@@ -151,7 +169,7 @@ export function Board() {
       cancel = true
       window.clearInterval(id)
     }
-  }, [])
+  }, [selectedRepositoryId])
 
   useEffect(() => {
     if (selectedId && runs.some((run) => run.id === selectedId)) return
@@ -193,7 +211,7 @@ export function Board() {
     setPushing(true)
     setPushNotice(null)
     try {
-      const result = await postJson('/api/pushes', { branch: 'develop' })
+      const result = await postJson('/api/pushes', { repository: selectedRepositoryId, branch: 'develop' })
       if (!result.ok) {
         setPushNotice({ ok: false, error: apiError(result.body, result.status, 'Push failed') })
         return
@@ -222,7 +240,7 @@ export function Board() {
     setOpeningMain(true)
     setPushNotice(null)
     try {
-      const result = await postJson('/api/main', {})
+      const result = await postJson('/api/main', { repository: selectedRepositoryId })
       if (!result.ok) setPushNotice({ ok: false, error: apiError(result.body, result.status, 'PR failed') })
     } catch {
       setPushNotice({ ok: false, error: 'PR request failed' })
@@ -238,7 +256,7 @@ export function Board() {
     setPushing(true)
     setPushNotice(null)
     try {
-      const result = await postJson('/api/pushes', { branch: 'main' })
+      const result = await postJson('/api/pushes', { repository: selectedRepositoryId, branch: 'main' })
       if (!result.ok) {
         setPushNotice({ ok: false, error: apiError(result.body, result.status, 'Push failed') })
         return
@@ -266,8 +284,14 @@ export function Board() {
     />
   )
 
-  if (repoReady && !offline && repo && !repo.origin) {
-    return <Onboarding onSaved={(origin) => setRepo({ ...repo, origin })} />
+  if (showSetup || (repoReady && !offline && repositories.length === 0)) {
+    return <Onboarding onCancel={repositories.length ? () => setShowSetup(false) : undefined} onSaved={(snapshot) => {
+      const saved = normalizeRepo(snapshot)
+      setRepo(saved)
+      setRepositories((items) => [...items.filter((item) => item.id !== saved.id), { id: saved.id, name: saved.name }])
+      setSelectedRepositoryId(saved.id)
+      setShowSetup(false)
+    }} />
   }
 
   return (
@@ -275,9 +299,17 @@ export function Board() {
       <Box sx={{ px: 1.5, py: 1.25, borderBottom: '1px solid', borderColor: 'divider' }}>
         <Box sx={{ display: 'flex', alignItems: 'center', flexWrap: 'wrap', gap: 2 }}>
           <Typography sx={{ fontWeight: 600, fontSize: 16 }}>local ci</Typography>
-          <Typography variant="caption" sx={{ fontFamily: mono }}>
-            ~/ci/repos/sample-app.git
-          </Typography>
+          {repoReady && repositories.length > 0 && (
+            <Select size="small" value={selectedRepositoryId} onChange={(event) => {
+              setSelectedRepositoryId(event.target.value)
+              setRuns([])
+              setSelectedId(null)
+              setPushNotice(null)
+            }} sx={{ minWidth: 190, height: 32, fontSize: 13 }}>
+              {repositories.map((item) => <MenuItem key={item.id} value={item.id}>{item.name}</MenuItem>)}
+            </Select>
+          )}
+          {repo && <Typography variant="caption" sx={{ fontFamily: mono }}>{repo.id} · {repo.barePath}</Typography>}
           {!runsReady ? (
             <Skeleton variant="text" width={118} height={16} />
           ) : (
@@ -286,6 +318,7 @@ export function Board() {
             </Typography>
           )}
           <Box sx={{ flex: 1 }} />
+          {repoReady && repositories.length > 0 && <Button type="button" size="small" onClick={() => setShowSetup(true)}>Add repository</Button>}
           {!repoReady && (
             <>
               <Skeleton variant="rounded" width={150} height={30} />
@@ -322,10 +355,13 @@ export function Board() {
         <Typography variant="caption" color="text.secondary" sx={{ display: 'block', mt: 0.5 }}>
           Merge moves local develop. Push to develop sends it to GitHub. PR develop → main runs tests, then Push main sends that commit to GitHub main.
         </Typography>
+        {repo && <Typography variant="caption" color="text.secondary" sx={{ display: 'block', mt: 0.25, fontFamily: mono }}>
+          git remote add ci {repo.barePath}
+        </Typography>}
       </Box>
 
       <Box sx={{ flex: 1, minHeight: 0, display: 'grid', gridTemplateColumns: 'minmax(360px, 460px) minmax(0, 1fr)', gap: 1.25, p: 1.25 }}>
-        <Box sx={{ minHeight: 0, display: 'grid', gridTemplateRows: 'auto auto minmax(0, 1fr)', gap: 1.25 }}>
+        <Box sx={{ minHeight: 0, display: 'grid', gridTemplateRows: 'auto auto minmax(120px, auto) minmax(0, 1fr)', gap: 1.25 }}>
           <Panel title="Runner" action={<Typography variant="caption" color="text.secondary">concurrency 1</Typography>}>
             {!runsReady && <RunSkeleton />}
             {runsReady && (
@@ -372,6 +408,18 @@ export function Board() {
               </Typography>
             )}
             {queued.map(summary)}
+          </Panel>
+
+          <Panel title="Branches" action={<Typography variant="caption" color="text.secondary">{repo?.maxBranchDrift ?? 10} commit drift limit</Typography>}>
+            {!repo?.branches.length && <Typography variant="caption" color="text.secondary" sx={{ display: 'block', px: 1.5, py: 1.25 }}>No branches in this CI repository yet.</Typography>}
+            {repo?.branches.map((branch) => (
+              <Box key={branch.name} sx={{ px: 1.5, py: 0.8, display: 'flex', alignItems: 'center', gap: 1, borderBottom: '1px solid', borderColor: 'divider' }}>
+                <Typography sx={{ fontSize: 13, fontWeight: 600, flex: 1 }} noWrap>{branch.name}</Typography>
+                <Typography variant="caption" color="text.secondary" sx={{ fontFamily: mono }}><Sha value={branch.sha} /></Typography>
+                {branch.behindDevelop !== null && branch.name !== 'develop' && <Typography variant="caption" color={branch.behindDevelop > (repo?.maxBranchDrift ?? 10) ? 'error.main' : 'text.secondary'}>{branch.behindDevelop} behind</Typography>}
+                <Chip size="small" label={branch.status.replaceAll('-', ' ')} color={branch.status === 'ready-to-merge' || branch.status === 'ready-to-deploy' ? 'success' : branch.status === 'failed' || branch.status === 'sync-required' ? 'error' : 'default'} />
+              </Box>
+            ))}
           </Panel>
 
           <Panel title="History" fill>
