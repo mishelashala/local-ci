@@ -6,6 +6,10 @@ export type RepoSnapshot = {
   develop: string | null
   branches: { name: string; sha: string; aheadOfDevelop: number | null; behindDevelop: number | null; status: 'ready-to-merge' | 'passed' | 'failed' | 'running' | 'queued' | 'sync-required' | 'idle' | 'ready-to-deploy' }[]
   origin: string | null
+  githubDevelop?: { local: string | null; github: string | null; relation: string }
+  githubMain?: { local: string | null; github: string | null; relation: string }
+  syncError?: string | null
+  pendingReset?: { mainSha: string; developSha: string; githubDevelopSha: string | null } | null
 }
 
 type MergeCandidate = {
@@ -24,7 +28,7 @@ function isSha40(value: string | null | undefined): value is string {
 }
 
 export function mergeReady(run: MergeCandidate, repo: RepoSnapshot | null): boolean {
-  if (repo === null || run.target === 'main') return false
+  if (repo === null || run.target === 'main' || run.target === 'reconcile' || repo.githubDevelop?.relation === 'diverged') return false
   const branch = repo.branches.find((item) => item.name === run.branch)
   return (
     run.status === 'passed' &&
