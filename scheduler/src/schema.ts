@@ -18,6 +18,9 @@ export const runs = sqliteTable('runs', {
   headSha: text('head_sha'),
   candidateSha: text('candidate_sha'),
   target: text('target'),
+  autoMerge: integer('auto_merge').notNull().default(0),
+  integratedAt: integer('integrated_at'),
+  taskId: text('task_id'),
 })
 
 export const logs = sqliteTable('logs', {

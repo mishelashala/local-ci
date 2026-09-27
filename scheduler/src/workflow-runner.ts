@@ -13,10 +13,13 @@ export interface WorkflowRunner {
     sha: string
     headSha: string
     baseSha: string
-    target: 'develop' | 'main' | 'reconcile' | 'post-merge'
+    target: 'develop' | 'main' | 'reconcile' | 'post-merge' | 'smoke'
     runId: string
     signal: AbortSignal
-    log: (line: string) => void
+    log: (line: string, workflowPath?: string) => void
+    onWorkflows?: (paths: string[]) => void
+    onWorkflowStart?: (path: string) => void
+    onWorkflowFinish?: (path: string, exitCode: number) => void
   }): Promise<number>
 }
 
@@ -56,6 +59,15 @@ function matches(patterns: string[] | undefined, value: string) {
 }
 
 function selectedWorkflows(input: Parameters<WorkflowRunner['run']>[0]) {
+  if (input.target === 'smoke') {
+    const file = '.local-ci/workflows/develop-smoke.yml'
+    if (!existsSync(join(input.workspace, file))) throw new Error('post-merge smoke workflow disappeared from the tested commit')
+    const workflow = YAML.parse(readFileSync(join(input.workspace, file), 'utf8')) as { on?: { push?: { branches?: string[] } } }
+    if (!workflow?.on?.push || (workflow.on.push.branches && !matches(workflow.on.push.branches, 'develop'))) {
+      throw new Error('develop-smoke.yml must declare on: push for develop')
+    }
+    return [file]
+  }
   const relative = existsSync(join(input.workspace, '.local-ci', 'workflows')) ? '.local-ci/workflows' : '.github/workflows'
   const directory = join(input.workspace, relative)
   if (!existsSync(directory)) throw new Error('no .local-ci/workflows or .github/workflows directory at the candidate SHA')
@@ -96,14 +108,18 @@ export class ActWorkflowRunner implements WorkflowRunner {
       input.log('All pull_request workflows are excluded by branch/path filters; GitHub would run no checks.')
       return 0
     }
+    input.onWorkflows?.(selected)
     const base = input.target === 'main' ? 'main' : 'develop'
     const head = input.ref.replace(/^refs\/heads\//, '')
     // act copies this disposable checkout into the job container. Its origin URL is a
     // host path, so prepare the ratchet ref here instead of fetching inside the job.
     execFileSync('git', ['update-ref', 'refs/remotes/origin/develop',
-      input.target === 'main' ? input.headSha : input.baseSha], { cwd: input.workspace })
+      input.target === 'smoke' ? input.sha : input.target === 'main' ? input.headSha : input.baseSha], { cwd: input.workspace })
     const eventPath = join(input.workspace, '.local-ci-event.json')
-    writeFileSync(eventPath, JSON.stringify({
+    writeFileSync(eventPath, JSON.stringify(input.target === 'smoke' ? {
+      ref: 'refs/heads/develop', before: input.baseSha, after: input.sha,
+      repository: { full_name: input.repository },
+    } : {
       action: 'synchronize',
       number: 1,
       ref: 'refs/pull/1/merge',
@@ -120,8 +136,9 @@ export class ActWorkflowRunner implements WorkflowRunner {
     let result = 0
     for (const file of selected) {
       if (input.signal.aborted) return 1
+      input.onWorkflowStart?.(file)
       const args = [
-        'pull_request', '-C', input.workspace, '-W', file, '--eventpath', eventPath,
+        input.target === 'smoke' ? 'push' : 'pull_request', '-C', input.workspace, '-W', file, '--eventpath', eventPath,
         '--artifact-server-path', artifacts, '--pull=false',
         '--container-architecture', process.env.LOCAL_CI_CONTAINER_ARCH ?? 'linux/amd64',
         '-P', process.env.LOCAL_CI_ACT_PLATFORM ?? 'ubuntu-latest=catthehacker/ubuntu:act-latest',
@@ -134,8 +151,9 @@ export class ActWorkflowRunner implements WorkflowRunner {
           env: { ...process.env, GIT_TERMINAL_PROMPT: '0', CI: 'true' },
           stdio: ['ignore', 'pipe', 'pipe'],
         })
-        const flushOut = streamLines(child.stdout, input.log)
-        const flushErr = streamLines(child.stderr, input.log)
+        const workflowLog = (line: string) => input.log(line, file)
+        const flushOut = streamLines(child.stdout, workflowLog)
+        const flushErr = streamLines(child.stderr, workflowLog)
         const abort = () => stopProcess(child)
         input.signal.addEventListener('abort', abort, { once: true })
         if (input.signal.aborted) abort()
@@ -149,11 +167,12 @@ export class ActWorkflowRunner implements WorkflowRunner {
           resolve(exit)
         }
         child.on('error', (error: NodeJS.ErrnoException) => {
-          input.log(error.code === 'ENOENT' ? 'error: act is not installed or is not on PATH' : 'error: ' + error.message)
+          workflowLog(error.code === 'ENOENT' ? 'error: act is not installed or is not on PATH' : 'error: ' + error.message)
           done(1)
         })
         child.on('close', (exit) => done(exit ?? 1))
       })
+      input.onWorkflowFinish?.(file, code)
       if (code !== 0) result = code
     }
     input.log('Artifacts (if any): ' + artifacts)

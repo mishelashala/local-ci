@@ -7,7 +7,7 @@ import { drizzle } from 'drizzle-orm/better-sqlite3'
 import { logs, repositories, runs } from './schema.ts'
 import { readBranchSha } from './git-repo.ts'
 
-const dataDir = join(dirname(fileURLToPath(import.meta.url)), '..', 'data')
+const dataDir = process.env.LOCAL_CI_DATA_DIR ?? join(dirname(fileURLToPath(import.meta.url)), '..', 'data')
 mkdirSync(dataDir, { recursive: true })
 
 const sqlite = new Database(join(dataDir, 'ci.sqlite'))
@@ -45,6 +45,9 @@ for (const statement of [
   `ALTER TABLE runs ADD COLUMN head_sha TEXT`,
   `ALTER TABLE runs ADD COLUMN candidate_sha TEXT`,
   `ALTER TABLE runs ADD COLUMN target TEXT`,
+  `ALTER TABLE runs ADD COLUMN auto_merge INTEGER NOT NULL DEFAULT 0`,
+  `ALTER TABLE runs ADD COLUMN integrated_at INTEGER`,
+  `ALTER TABLE runs ADD COLUMN task_id TEXT`,
 ]) {
   try {
     sqlite.exec(statement)
@@ -62,6 +65,17 @@ sqlite.exec(`
     created_at INTEGER NOT NULL
   )
 `)
+try { sqlite.exec(`ALTER TABLE logs ADD COLUMN workflow_path TEXT`) } catch { /* already present */ }
+
+sqlite.exec(`CREATE TABLE IF NOT EXISTS workflow_runs (
+  run_id TEXT NOT NULL,
+  path TEXT NOT NULL,
+  status TEXT NOT NULL,
+  started_at INTEGER,
+  finished_at INTEGER,
+  exit_code INTEGER,
+  PRIMARY KEY (run_id, path)
+)`)
 
 sqlite.exec(`
   CREATE TABLE IF NOT EXISTS promotions (
@@ -73,6 +87,14 @@ sqlite.exec(`
     created_at INTEGER NOT NULL
   )
 `)
+
+sqlite.exec(`CREATE TABLE IF NOT EXISTS integration_control (
+  repository TEXT PRIMARY KEY,
+  mode TEXT NOT NULL,
+  develop_sha TEXT,
+  reason TEXT,
+  created_at INTEGER NOT NULL
+)`)
 
 sqlite.prepare(`UPDATE runs SET status = 'failed', exit_code = 1, finished_at = ? WHERE status = 'running'`).run(Date.now())
 
@@ -86,9 +108,10 @@ export type CandidateInput = {
   baseSha: string | null
   headSha: string | null
   candidateSha: string | null
-  target?: 'develop' | 'main' | 'reconcile' | 'post-merge'
+  target?: 'develop' | 'main' | 'reconcile' | 'post-merge' | 'smoke'
   status: 'queued' | 'failed'
   logLine?: string
+  taskId?: string | null
 }
 
 function staleCandidates(repository: string, developSha: string | null, mainSha: string | null) {
@@ -98,7 +121,7 @@ function staleCandidates(repository: string, developSha: string | null, mainSha:
         `UPDATE runs SET status = 'stale'
          WHERE repository = ? AND trigger = 'candidate'
            AND (target IS NULL OR target = 'develop')
-           AND status IN ('queued', 'passed')
+           AND status IN ('queued', 'passed') AND integrated_at IS NULL
            AND base_sha IS NOT NULL`,
       )
       .run(repository)
@@ -108,7 +131,7 @@ function staleCandidates(repository: string, developSha: string | null, mainSha:
         `UPDATE runs SET status = 'stale'
          WHERE repository = ? AND trigger = 'candidate'
            AND (target IS NULL OR target = 'develop')
-           AND status IN ('queued', 'passed')
+           AND status IN ('queued', 'passed') AND integrated_at IS NULL
            AND base_sha IS NOT ?
            AND NOT (status = 'passed' AND candidate_sha IS ?)`,
       )
@@ -159,13 +182,16 @@ export function recordCandidate(input: CandidateInput) {
     headSha: input.headSha,
     candidateSha: input.candidateSha,
     target: input.target ?? 'develop',
+    autoMerge: input.target === undefined || input.target === 'develop' ? 1 : 0,
+    integratedAt: null,
+    taskId: input.taskId ?? null,
   }
   const target = row.target
   const write = sqlite.transaction(() => {
     sqlite
       .prepare(
         `UPDATE runs SET status = 'stale'
-         WHERE trigger = 'candidate' AND status = 'queued' AND branch = ? AND repository = ?
+         WHERE trigger = 'candidate' AND status IN ('queued', 'passed') AND integrated_at IS NULL AND branch = ? AND repository = ?
            AND (target = ? OR (? = 'develop' AND target IS NULL))`,
       )
       .run(branch, input.repository, target, target)
@@ -180,12 +206,72 @@ export function markRunStale(id: string) {
   sqlite.prepare(`UPDATE runs SET status = 'stale' WHERE id = ? AND status IN ('queued', 'passed')`).run(id)
 }
 
+export function retireCandidate(id: string, line: string) {
+  sqlite.prepare(`UPDATE runs SET status = 'stale', auto_merge = 0 WHERE id = ?`).run(id)
+  appendLog(id, line)
+}
+
+export function integrationControl(repository: string) {
+  return sqlite.prepare(`SELECT mode, develop_sha AS developSha, reason FROM integration_control WHERE repository = ?`).get(repository) as
+    | { mode: 'frozen' | 'blocked'; developSha: string | null; reason: string | null }
+    | undefined
+}
+
+export function setIntegrationControl(repository: string, mode: 'frozen' | 'blocked', developSha: string | null, reason: string) {
+  sqlite.prepare(`INSERT INTO integration_control (repository, mode, develop_sha, reason, created_at) VALUES (?, ?, ?, ?, ?)
+    ON CONFLICT(repository) DO UPDATE SET mode=excluded.mode, develop_sha=excluded.develop_sha, reason=excluded.reason, created_at=excluded.created_at`)
+    .run(repository, mode, developSha, reason, Date.now())
+}
+
+export function clearIntegrationControl(repository: string) {
+  sqlite.prepare(`DELETE FROM integration_control WHERE repository = ?`).run(repository)
+}
+
+export function markIntegrated(id: string) {
+  sqlite.prepare(`UPDATE runs SET integrated_at = ? WHERE id = ? AND status = 'passed'`).run(Date.now(), id)
+}
+
+export function markDefective(repository: string, sha: string) {
+  sqlite.prepare(`UPDATE runs SET status = 'failed', integrated_at = NULL, auto_merge = 0
+    WHERE repository = ? AND target = 'develop' AND candidate_sha = ? AND integrated_at IS NOT NULL`).run(repository, sha)
+}
+
+export function pendingIntegration() {
+  return sqlite.prepare(`SELECT r.id FROM runs r LEFT JOIN integration_control c ON c.repository = r.repository
+    WHERE r.status = 'passed' AND r.auto_merge = 1 AND r.integrated_at IS NULL AND c.mode IS NULL
+    ORDER BY r.created_at ASC, r.id ASC LIMIT 1`).get() as { id: string } | undefined
+}
+
+export function interruptedSmoke() {
+  return sqlite.prepare(`SELECT r.id, r.status FROM runs r JOIN integration_control c ON c.repository = r.repository
+    WHERE r.target = 'smoke' AND r.status IN ('passed', 'failed') AND c.mode = 'frozen'
+      AND c.develop_sha = r.candidate_sha ORDER BY r.created_at DESC LIMIT 1`).get() as { id: string; status: 'passed' | 'failed' } | undefined
+}
+
+export function interruptedPromotionValidation() {
+  return sqlite.prepare(`SELECT c.repository FROM integration_control c JOIN runs r ON r.repository = c.repository
+    WHERE c.mode = 'frozen' AND c.reason = 'Validating develop for promotion'
+      AND r.target = 'main' AND r.status = 'failed'
+      AND r.head_sha = c.develop_sha
+      AND NOT EXISTS (SELECT 1 FROM runs newer WHERE newer.repository = r.repository AND newer.target = 'main'
+        AND newer.created_at > r.created_at AND newer.status IN ('queued', 'running', 'passed'))
+      ORDER BY r.created_at DESC LIMIT 1`).get() as { repository: string } | undefined
+}
+
+export function staleOrQueuedCandidates() {
+  return sqlite.prepare(`SELECT r.id FROM runs r LEFT JOIN integration_control c ON c.repository = r.repository
+    WHERE r.auto_merge = 1 AND r.target = 'develop' AND r.status IN ('queued', 'stale') AND c.mode IS NULL
+    AND NOT EXISTS (SELECT 1 FROM runs newer WHERE newer.repository = r.repository AND newer.branch = r.branch
+      AND newer.auto_merge = 1 AND newer.created_at > r.created_at AND newer.status != 'stale')
+    ORDER BY r.created_at ASC, r.id ASC`).all() as { id: string }[]
+}
+
 export function hasPassedCandidate(repository: string, sha: string) {
   const row = sqlite
     .prepare(
       `SELECT id FROM runs
        WHERE repository = ? AND status = 'passed' AND trigger = 'candidate' AND candidate_sha = ?
-         AND (target IS NULL OR target IN ('develop', 'reconcile'))
+         AND ((target = 'develop' AND integrated_at IS NOT NULL) OR target = 'reconcile')
        LIMIT 1`,
     )
     .get(repository, sha) as { id: string } | undefined
@@ -264,7 +350,34 @@ export function getRun(id: string) {
   return db.select().from(runs).where(eq(runs.id, id)).get()
 }
 
-export function listLogLines(runId: string): string[] {
+export function listWorkflows(runId: string) {
+  return sqlite.prepare(`SELECT path, status, started_at AS startedAt, finished_at AS finishedAt,
+    exit_code AS exitCode FROM workflow_runs WHERE run_id = ? ORDER BY path`).all(runId) as
+    { path: string; status: string; startedAt: number | null; finishedAt: number | null; exitCode: number | null }[]
+}
+
+export function smokeForCandidate(repository: string, sha: string) {
+  return sqlite.prepare(`SELECT id, status FROM runs WHERE repository = ? AND target = 'smoke' AND candidate_sha = ?
+    ORDER BY created_at DESC LIMIT 1`).get(repository, sha) as { id: string; status: string } | undefined
+}
+
+export function registerWorkflows(runId: string, paths: string[]) {
+  const register = sqlite.prepare(`INSERT OR IGNORE INTO workflow_runs (run_id, path, status) VALUES (?, ?, 'queued')`)
+  sqlite.transaction(() => { for (const path of paths) register.run(runId, path) })()
+}
+
+export function startWorkflow(runId: string, path: string) {
+  sqlite.prepare(`UPDATE workflow_runs SET status = 'running', started_at = ? WHERE run_id = ? AND path = ?`).run(Date.now(), runId, path)
+}
+
+export function finishWorkflow(runId: string, path: string, exitCode: number) {
+  sqlite.prepare(`UPDATE workflow_runs SET status = ?, finished_at = ?, exit_code = ? WHERE run_id = ? AND path = ?`)
+    .run(exitCode === 0 ? 'passed' : 'failed', Date.now(), exitCode, runId, path)
+}
+
+export function listLogLines(runId: string, workflowPath?: string): string[] {
+  if (workflowPath) return (sqlite.prepare(`SELECT line FROM logs WHERE run_id = ? AND workflow_path = ? ORDER BY seq`)
+    .all(runId, workflowPath) as { line: string }[]).map((row) => row.line)
   return db
     .select()
     .from(logs)
@@ -274,15 +387,16 @@ export function listLogLines(runId: string): string[] {
     .map((row) => row.line)
 }
 
-export function appendLog(runId: string, line: string) {
+export function appendLog(runId: string, line: string, workflowPath?: string) {
   const current = sqlite.prepare(`SELECT COALESCE(MAX(seq), 0) AS n FROM logs WHERE run_id = ?`).get(runId) as { n: number }
-  db.insert(logs)
-    .values({ runId, seq: current.n + 1, line: line.slice(0, 2000), createdAt: Date.now() })
-    .run()
+  sqlite.prepare(`INSERT INTO logs (run_id, seq, line, created_at, workflow_path) VALUES (?, ?, ?, ?, ?)`)
+    .run(runId, current.n + 1, line.slice(0, 2000), Date.now(), workflowPath ?? null)
 }
 
 export function finishRun(runId: string, status: 'passed' | 'failed' | 'canceled', exitCode: number | null) {
   db.update(runs).set({ status, exitCode, finishedAt: Date.now() }).where(eq(runs.id, runId)).run()
+  sqlite.prepare(`UPDATE workflow_runs SET status = ?, finished_at = ? WHERE run_id = ? AND status IN ('queued', 'running')`)
+    .run(status === 'canceled' ? 'canceled' : 'failed', Date.now(), runId)
 }
 
 export function cancelQueuedRun(runId: string) {
@@ -303,6 +417,7 @@ export function retryRun(runId: string) {
     candidateSha: prior.candidateSha,
     target: (prior.target ?? 'develop') as CandidateInput['target'],
     status: 'queued',
+    taskId: prior.taskId,
   })
 }
 
@@ -313,7 +428,9 @@ export function claimNextRunGlobal() {
       // Current refs are checked by the worker before this transaction as well.
       staleCandidates(repository.id, readBranchSha(repository.barePath, 'develop'), readBranchSha(repository.barePath, 'main'))
     }
-    const next = sqlite.prepare(`SELECT id FROM runs WHERE status = 'queued' ORDER BY created_at ASC, id ASC LIMIT 1`).get() as { id: string } | undefined
+    const next = sqlite.prepare(`SELECT r.id FROM runs r LEFT JOIN integration_control c ON c.repository = r.repository
+      WHERE r.status = 'queued' AND (r.target != 'develop' OR c.mode IS NULL)
+      ORDER BY CASE WHEN r.target = 'smoke' THEN 0 ELSE 1 END, r.created_at ASC, r.id ASC LIMIT 1`).get() as { id: string } | undefined
     if (!next) return undefined
     const changed = sqlite.prepare(`UPDATE runs SET status = 'running', started_at = ? WHERE id = ? AND status = 'queued'`).run(Date.now(), next.id)
     return changed.changes === 1 ? getRun(next.id) : undefined

@@ -8,7 +8,6 @@ import {
   compareAndSwapDevelop,
   compareAndSwapRef,
   currentRepoSnapshot,
-  pushDevelop,
   pushRef,
   readBranchSha,
   readDevelopSha,
@@ -16,13 +15,14 @@ import {
   retainCandidate,
   setOrigin,
 } from './git-repo.ts'
-import { bareRepo, dashboardDistRoot, hookSourceRoot, repositoryRoot } from './paths.ts'
+import { bareRepo, dashboardDistRoot, hookSourceRoot, repositoryRoot, workRoot } from './paths.ts'
 import {
   getRun,
   findPassedMain,
   hasPassedCandidate,
-  hasPassedPostMerge,
   listLogLines,
+  listWorkflows,
+  smokeForCandidate,
   listRuns,
   markRunStale,
   recordCandidate,
@@ -36,8 +36,12 @@ import {
   savePromotion,
   pendingPromotion,
   finishPromotion,
+  integrationControl,
+  setIntegrationControl,
+  clearIntegrationControl,
 } from './db.ts'
 import { cancelActiveRun, startWorker } from './worker.ts'
+import { withRepositoryLock } from './integration.ts'
 import { assertRemoteUnchanged, branchSync, remoteSha, synchronizeBranch, synchronizeDevelop } from './synchronization.ts'
 
 const ORIGIN_HELP = 'Save the GitHub remote on the setup screen.'
@@ -104,7 +108,7 @@ function repositoryFor(id: unknown) {
 async function snapshotFor(repository: NonNullable<ReturnType<typeof getRepository>>) {
   let syncError: string | null = null
   try {
-    await synchronizeDevelop(repository.barePath)
+    if (!integrationControl(repository.id)) await synchronizeDevelop(repository.barePath)
     await synchronizeBranch(repository.barePath, 'main')
   } catch (error) {
     syncError = error instanceof Error ? error.message : String(error)
@@ -129,6 +133,7 @@ async function snapshotFor(repository: NonNullable<ReturnType<typeof getReposito
     githubMain: branchSync(repository.barePath, 'main'),
     syncError,
     pendingReset: pendingPromotion(repository.id) ?? null,
+    integration: integrationControl(repository.id) ?? null,
   }
 }
 
@@ -195,16 +200,45 @@ app.post('/repositories', async (request, reply) => {
   }
 })
 
-app.get<{ Params: { id: string } }>('/runs/:id/logs', async (request, reply) => {
+app.get<{ Params: { id: string }; Querystring: { workflow?: string } }>('/runs/:id/logs', async (request, reply) => {
   const run = getRun(request.params.id)
   if (!run) return reply.code(404).send({ error: 'run not found' })
-  return { lines: listLogLines(run.id) }
+  const workflow = request.query.workflow
+  if (workflow && !listWorkflows(run.id).some((item) => item.path === workflow)) return reply.code(404).send({ error: 'workflow not found in run' })
+  return { lines: listLogLines(run.id, workflow) }
+})
+
+app.get<{ Params: { id: string } }>('/runs/:id/workflows', async (request, reply) => {
+  if (!getRun(request.params.id)) return reply.code(404).send({ error: 'run not found' })
+  return { workflows: listWorkflows(request.params.id) }
 })
 
 app.get<{ Params: { id: string } }>('/runs/:id', async (request, reply) => {
   const run = getRun(request.params.id)
   if (!run) return reply.code(404).send({ error: 'run not found' })
   return { run }
+})
+
+app.get<{ Params: { id: string } }>('/runs/:id/result', async (request, reply) => {
+  const run = getRun(request.params.id)
+  if (!run) return reply.code(404).send({ error: 'run not found' })
+  const lines = listLogLines(run.id)
+  const smoke = run.target === 'develop' && run.candidateSha ? smokeForCandidate(run.repository, run.candidateSha) : undefined
+  const control = integrationControl(run.repository)
+  const status = run.status === 'failed' ? 'failed' : run.integratedAt
+    ? control?.mode === 'blocked' ? 'blocked'
+      : (smoke && smoke.status !== 'passed') || (control?.developSha === run.candidateSha && control.reason === 'Post-merge smoke check')
+        ? 'verifying' : 'integrated'
+    : run.status
+  return {
+    runId: run.id, repository: run.repository, taskId: run.taskId ?? run.branch, branch: run.branch,
+    headSha: run.headSha, candidateSha: run.candidateSha,
+    status, smokeRunId: smoke?.id ?? null,
+    exitCode: run.exitCode,
+    failure: run.status === 'failed' ? lines.filter((line) => /error:|fail|conflict/i.test(line)).slice(-8) : [],
+    artifactDirectory: join(workRoot, 'artifacts', run.id),
+    logsUrl: `/api/runs/${encodeURIComponent(run.id)}/logs`,
+  }
 })
 
 app.post<{ Params: { id: string } }>('/runs/:id/cancel', async (request, reply) => {
@@ -280,25 +314,39 @@ app.post('/reset-develop', async (request, reply) => {
   const body = request.body as { repository?: unknown } | null
   const repository = repositoryFor(body?.repository)
   if (!repository) return reply.code(404).send({ error: 'repository not found' })
+  return withRepositoryLock(repository.id, async () => {
   const promotion = pendingPromotion(repository.id)
   if (!promotion) return reply.code(409).send({ error: 'no pending promotion' })
+  if (!integrationControl(repository.id)) return reply.code(409).send({ error: 'promotion freeze is missing; resolve recovery before reset' })
   const path = repository.barePath
   try {
     await synchronizeDevelop(path, true)
     await synchronizeBranch(path, 'main')
-    assertRemoteUnchanged(path, 'develop', promotion.githubDevelopSha)
     assertRemoteUnchanged(path, 'main', promotion.mainSha)
-    if (readDevelopSha(path) !== promotion.developSha || readBranchSha(path, 'main') !== promotion.mainSha) {
+    if (readBranchSha(path, 'main') !== promotion.mainSha) {
       return reply.code(409).send({ error: 'local branches moved since promotion' })
     }
-    const lease = `--force-with-lease=refs/heads/develop:${promotion.githubDevelopSha ?? ''}`
-    const result = execFileSync('git', [`--git-dir=${path}`, 'push', lease, 'origin', `${promotion.mainSha}:refs/heads/develop`],
-      { encoding: 'utf8', env: { ...process.env, GIT_TERMINAL_PROMPT: '0' } })
-    compareAndSwapDevelop(path, promotion.mainSha, promotion.developSha)
+    const githubSha = remoteSha(path, 'develop')
+    let result = 'Remote develop already reset'
+    if (githubSha !== promotion.mainSha) {
+      assertRemoteUnchanged(path, 'develop', promotion.githubDevelopSha)
+      if (readDevelopSha(path) !== promotion.developSha) return reply.code(409).send({ error: 'local develop moved since promotion' })
+      const lease = `--force-with-lease=refs/heads/develop:${promotion.githubDevelopSha ?? ''}`
+      result = execFileSync('git', [`--git-dir=${path}`, 'push', lease, 'origin', `${promotion.mainSha}:refs/heads/develop`],
+        { encoding: 'utf8', env: { ...process.env, GIT_TERMINAL_PROMPT: '0' } })
+    }
+    if (readDevelopSha(path) === promotion.developSha && promotion.mainSha !== promotion.developSha) {
+      compareAndSwapDevelop(path, promotion.mainSha, promotion.developSha)
+    } else if (readDevelopSha(path) !== promotion.mainSha) {
+      setIntegrationControl(repository.id, 'blocked', promotion.developSha, 'Remote reset completed but local develop moved; reconcile manually')
+      return reply.code(409).send({ error: 'remote reset completed but local develop moved; recovery required' })
+    }
     finishPromotion(repository.id)
+    clearIntegrationControl(repository.id)
     clearRepoCache()
     return reply.code(201).send({ develop: promotion.mainSha, result })
   } catch (error) { return reply.code(409).send({ error: `reset blocked: ${String(error)}` }) }
+  })
 })
 
 app.post('/events', async (request, reply) => {
@@ -306,6 +354,7 @@ app.post('/events', async (request, reply) => {
   if (typeof parsed === 'string') return reply.code(400).send({ error: parsed })
   const repository = repositoryFor(parsed.repository)
   if (!repository) return reply.code(404).send({ error: 'repository is not registered' })
+  return withRepositoryLock(repository.id, async () => {
   const repoPath = repository.barePath
   if (parsed.ref === 'refs/heads/develop' || parsed.ref === 'refs/heads/main') {
     return reply.code(400).send({ error: 'that branch moves only from the dashboard' })
@@ -313,7 +362,7 @@ app.post('/events', async (request, reply) => {
   if (parsed.newSha === DELETED) return { ignored: 'branch delete' }
 
   try {
-    const sync = await synchronizeDevelop(repoPath, true)
+    const sync = integrationControl(repository.id) ? branchSync(repoPath, 'develop') : await synchronizeDevelop(repoPath, true)
     if (sync.relation === 'diverged') return reply.code(409).send({ error: 'develop diverged from GitHub; validate a reconciliation first' })
   } catch (error) {
     return reply.code(502).send({ error: `GitHub synchronization failed: ${String(error)}` })
@@ -330,7 +379,7 @@ app.post('/events', async (request, reply) => {
       headSha: parsed.newSha,
       candidateSha: null,
       status: 'failed',
-      logLine: 'refs/heads/develop is missing. Run ./scripts/setup-ci.sh',
+      logLine: 'refs/heads/develop is missing. Connect the repository in the dashboard.',
     })
     return reply.code(201).send({ run })
   }
@@ -373,8 +422,10 @@ app.post('/events', async (request, reply) => {
     headSha: parsed.newSha,
     candidateSha: merged.sha.toLowerCase(),
     status: 'queued',
+    taskId: parsed.ref.slice('refs/heads/'.length),
   })
   return reply.code(201).send({ run })
+  })
 })
 
 app.post('/runs/manual', async (request, reply) => {
@@ -393,88 +444,35 @@ app.post('/runs/manual', async (request, reply) => {
   return reply.code(response.statusCode).send(response.json())
 })
 
-app.post('/merges', async (request, reply) => {
-  const body = request.body as { runId?: unknown } | null
-  if (!body || typeof body.runId !== 'string' || body.runId.length === 0) {
-    return reply.code(400).send({ error: 'runId is required' })
-  }
-  const run = getRun(body.runId)
-  if (!run) return reply.code(404).send({ error: 'run not found' })
-  const repository = repositoryFor(run.repository)
-  if (!repository) return reply.code(404).send({ error: 'repository is not registered' })
-  const repoPath = repository.barePath
-  if (run.target === 'main') {
-    return reply.code(409).send({ error: 'this run promotes main. Use Push main to GitHub' })
-  }
-  if (run.target === 'reconcile') return reply.code(409).send({ error: 'Use Reconcile develop for this run' })
-  if (run.target === 'post-merge') return reply.code(409).send({ error: 'post-merge runs cannot be merged again' })
-  try {
-    const sync = await synchronizeDevelop(repoPath, true)
-    if (sync.relation === 'diverged') return reply.code(409).send({ error: 'develop diverged from GitHub; reconcile first' })
-  } catch (error) { return reply.code(502).send({ error: `GitHub synchronization failed: ${String(error)}` }) }
-  if (run.status !== 'passed' || run.trigger !== 'candidate') {
-    return reply.code(409).send({ error: 'run is not a passed merge candidate' })
-  }
-  if (!run.candidateSha || !SHA.test(run.candidateSha) || !run.baseSha || !SHA.test(run.baseSha) || !run.headSha || !SHA.test(run.headSha)) {
-    return reply.code(409).send({ error: 'run is missing merge SHAs' })
-  }
-  const developSha = readDevelopSha(repoPath)
-  if (developSha !== run.baseSha) {
-    if (developSha !== run.candidateSha) markRunStale(run.id)
-    return reply.code(409).send({ error: 'develop moved since this run' })
-  }
-  const head = readBranchSha(repoPath, run.branch)
-  if (head !== run.headSha) {
-    return reply.code(409).send({ error: 'the branch tip moved since this run' })
-  }
-  const behind = Number(execFileSync('git', [`--git-dir=${repoPath}`, 'rev-list', '--count', `${run.headSha}..${developSha}`], { encoding: 'utf8' }).trim())
-  if (behind > MAX_BRANCH_DRIFT) return reply.code(409).send({ error: `branch is ${behind} commits behind develop; sync/rebase required` })
-  try {
-    compareAndSwapDevelop(repoPath, run.candidateSha, run.baseSha)
-  } catch {
-    const current = readDevelopSha(repoPath)
-    if (current !== run.candidateSha) markRunStale(run.id)
-    return reply.code(409).send({ error: 'develop moved since this run' })
-  }
-  clearRepoCache()
-  const verification = recordCandidate({
-    repository: repository.id, ref: run.ref, oldSha: run.baseSha, newSha: run.candidateSha,
-    baseSha: run.baseSha, headSha: run.headSha, candidateSha: run.candidateSha,
-    target: 'post-merge', status: 'queued',
-  })
-  return reply.code(201).send({ develop: run.candidateSha, verification })
-})
-
-app.post('/setup', async (request, reply) => {
-  const body = request.body as { repository?: unknown; github?: unknown } | null
-  const github = typeof body?.github === 'string' ? body.github.trim() : ''
-  if (!GITHUB_REMOTE.test(github)) {
-    return reply.code(400).send({ error: 'Use a git@, ssh://, or https:// remote' })
-  }
-  const repository = repositoryFor(body?.repository) ?? listRepositories()[0]
-  if (!repository) return reply.code(404).send({ error: 'repository not found' })
-  setOrigin(repository.barePath, github)
-  saveRepository({ ...repository, origin: github })
-  return reply.code(201).send({ origin: github, repository: repository.id })
-})
+app.post('/merges', async (_request, reply) => reply.code(409).send({ error: 'Feature candidates integrate automatically after their checks pass.' }))
 
 app.post('/main', async (request, reply) => {
   const body = request.body as { repository?: unknown } | null
   const repository = repositoryFor(body?.repository) ?? listRepositories()[0]
   if (!repository) return reply.code(404).send({ error: 'repository not found' })
+  return withRepositoryLock(repository.id, async () => {
+  if (integrationControl(repository.id)) return reply.code(409).send({ error: 'promotion or recovery is already active' })
+  const frozenSha = readDevelopSha(repository.barePath)
+  if (!frozenSha) return reply.code(409).send({ error: 'develop is missing' })
+  setIntegrationControl(repository.id, 'frozen', frozenSha, 'Validating develop for promotion')
   const repoPath = repository.barePath
   try {
     const develop = await synchronizeDevelop(repoPath, true)
     const main = await synchronizeBranch(repoPath, 'main')
-    if (develop.relation === 'diverged' || main.relation === 'diverged') return reply.code(409).send({ error: 'GitHub branch diverged; reconcile before validation' })
-  } catch (error) { return reply.code(502).send({ error: `GitHub synchronization failed: ${String(error)}` }) }
+    if (develop.relation === 'diverged' || main.relation === 'diverged' || readDevelopSha(repoPath) !== frozenSha) {
+      clearIntegrationControl(repository.id)
+      return reply.code(409).send({ error: 'branches changed during promotion setup; retry' })
+    }
+  } catch (error) { clearIntegrationControl(repository.id); return reply.code(502).send({ error: `GitHub synchronization failed: ${String(error)}` }) }
   const mainSha = readBranchSha(repoPath, 'main')
   const developSha = readDevelopSha(repoPath)
   if (!mainSha || !developSha) {
-    return reply.code(409).send({ error: 'main or develop is missing. Run ./scripts/setup-ci.sh' })
+    clearIntegrationControl(repository.id)
+    return reply.code(409).send({ error: 'main or develop is missing. Connect the repository in the dashboard.' })
   }
   const merged = await createTemporaryMerge({ bareRepo: repoPath, baseSha: mainSha, headSha: developSha })
   if ('conflict' in merged) {
+    clearIntegrationControl(repository.id)
     const run = recordCandidate({
       repository: repository.id,
       ref: 'refs/heads/develop',
@@ -503,6 +501,24 @@ app.post('/main', async (request, reply) => {
     status: 'queued',
   })
   return reply.code(201).send({ run })
+  })
+})
+
+app.post('/promotion/cancel', async (request, reply) => {
+  const body = request.body as { repository?: unknown } | null
+  const repository = repositoryFor(body?.repository)
+  if (!repository) return reply.code(404).send({ error: 'repository not found' })
+  return withRepositoryLock(repository.id, () => {
+    const control = integrationControl(repository.id)
+    if (!control || control.mode === 'blocked') return reply.code(409).send({ error: 'no cancellable promotion' })
+    const pending = pendingPromotion(repository.id)
+    if (pending && remoteSha(repository.barePath, 'develop') === pending.mainSha && readDevelopSha(repository.barePath) !== pending.mainSha) {
+      return reply.code(409).send({ error: 'GitHub reset completed but local develop has not; use Reset develop to finish recovery' })
+    }
+    if (pending) finishPromotion(repository.id)
+    clearIntegrationControl(repository.id)
+    return reply.code(200).send({ canceled: true })
+  })
 })
 
 app.post('/pushes', async (request, reply) => {
@@ -512,31 +528,45 @@ app.post('/pushes', async (request, reply) => {
   }
   const repository = repositoryFor(body.repository) ?? listRepositories()[0]
   if (!repository) return reply.code(404).send({ error: 'repository not found' })
+  return withRepositoryLock(repository.id, async () => {
   const repoPath = repository.barePath
   const origin = readOrigin(repoPath)
   if (!origin) return reply.code(409).send({ error: ORIGIN_HELP })
 
+  const control = integrationControl(repository.id)
+  if (body.branch === 'develop' && control) return reply.code(409).send({ error: 'promotion is active; staging push is paused' })
+  if (body.branch === 'main' && (!control || control.mode !== 'frozen')) return reply.code(409).send({ error: 'validate a frozen promotion first' })
+  const stagingSha = body.branch === 'develop' ? readDevelopSha(repoPath) : null
+  if (stagingSha) setIntegrationControl(repository.id, 'frozen', stagingSha, 'Sending tested develop to staging')
+
   try {
     const develop = await synchronizeDevelop(repoPath, true)
     const main = await synchronizeBranch(repoPath, 'main')
-    if (develop.relation === 'diverged' || main.relation === 'diverged') return reply.code(409).send({ error: 'GitHub branch diverged; reconcile before pushing' })
-  } catch (error) { return reply.code(502).send({ error: `GitHub synchronization failed: ${String(error)}` }) }
+    if (develop.relation === 'diverged' || main.relation === 'diverged') {
+      if (stagingSha) clearIntegrationControl(repository.id)
+      return reply.code(409).send({ error: 'GitHub branch diverged; reconcile before pushing' })
+    }
+  } catch (error) { if (stagingSha) clearIntegrationControl(repository.id); return reply.code(502).send({ error: `GitHub synchronization failed: ${String(error)}` }) }
 
   if (body.branch === 'develop') {
     const developSha = readDevelopSha(repoPath)
-    if (!developSha || !hasPassedCandidate(repository.id, developSha) || !hasPassedPostMerge(repository.id, developSha)) {
-      return reply.code(409).send({ error: 'develop requires a passed candidate and a passed post-merge verification before pushing' })
+    if (!developSha || developSha !== stagingSha || !hasPassedCandidate(repository.id, developSha)) {
+      clearIntegrationControl(repository.id)
+      return reply.code(409).send({ error: 'develop must still be the exact automatically integrated passing commit' })
     }
-    const pushed = await pushDevelop(repoPath)
-    if ('error' in pushed) return reply.code(502).send({ error: pushed.error })
+    const pushed = await pushRef(repoPath, developSha, 'refs/heads/develop')
+    if ('error' in pushed) { clearIntegrationControl(repository.id); return reply.code(502).send({ error: pushed.error }) }
+    clearIntegrationControl(repository.id)
     clearRepoCache()
     return reply.code(201).send({ sha: developSha, remote: origin })
   }
 
   const mainSha = readBranchSha(repoPath, 'main')
   const developSha = readDevelopSha(repoPath)
+  if (pendingPromotion(repository.id)) return reply.code(409).send({ error: 'finish or release the previous promotion first' })
+  if (control?.developSha !== developSha) return reply.code(409).send({ error: 'frozen develop changed; cancel and validate again' })
   if (!mainSha || !developSha) {
-    return reply.code(409).send({ error: 'main or develop is missing. Run ./scripts/setup-ci.sh' })
+    return reply.code(409).send({ error: 'main or develop is missing. Connect the repository in the dashboard.' })
   }
   const candidate = findPassedMain(repository.id, mainSha, developSha)
   if (!candidate) return reply.code(409).send({ error: 'develop → main has not passed against the current branches' })
@@ -550,8 +580,10 @@ app.post('/pushes', async (request, reply) => {
     }
   }
   savePromotion(repository.id, candidate, developSha, remoteSha(repoPath, 'develop'))
+  setIntegrationControl(repository.id, 'frozen', developSha, 'Main pushed; reset develop or release promotion')
   clearRepoCache()
   return reply.code(201).send({ sha: candidate, remote: origin })
+  })
 })
 
 const mimeTypes: Record<string, string> = {
@@ -582,5 +614,5 @@ app.get('/*', async (request, reply) => {
 
 startWorker()
 
-const port = 3001
+const port = Number(process.env.LOCAL_CI_PORT ?? 3001)
 await app.listen({ host: process.env.LOCAL_CI_HOST ?? '127.0.0.1', port })
