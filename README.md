@@ -1,45 +1,48 @@
-# local-ci
+# Local CI
 
-Local CI for one app. GitHub stays the remote. This scheduler runs the tests and moves `develop` and `main` only when you click.
+Local CI runs repository workflows on your own machine and provides a local dashboard for validation and branch promotion. GitHub remains the shared remote.
 
-## First time
+## Start the app
 
-1. Start the two servers, from the repo root:
-
-```bash
-npm install --prefix scheduler && npm run dev --prefix scheduler
-```
+Install dependencies once:
 
 ```bash
-npm install --prefix dashboard && npm run dev --prefix dashboard
+npm ci --prefix scheduler
+npm ci --prefix dashboard
 ```
 
-2. Turn `sample-app` into its own git repo if this is a fresh clone, then register the local bare repo:
+Then run the whole application with one command:
 
 ```bash
-cd sample-app
-git init -b main
-git add .
-git commit -m "Initial sample app"
-cd ..
-./scripts/setup-ci.sh
+npm run dev
 ```
 
-`./scripts/setup-ci.sh` creates `ci/repos/sample-app.git`, installs the hooks, and creates local `main` and `develop` if they are missing. Direct pushes to `develop` and `main` are rejected. Those refs move only from the dashboard.
+The scheduler serves both the dashboard and API at [http://127.0.0.1:3001](http://127.0.0.1:3001). The dashboard is rebuilt as files change. For a built run, use `npm start` from the project root.
 
-3. Open `http://127.0.0.1:5173`. If GitHub is not set yet, the page asks for the remote. Paste `git@github.com:you/sample-app.git` and click **Save remote**. That is where **Push to develop** and **Push main to GitHub** send commits.
+## Connect repositories
 
-## Tomorrow
+Choose **Add repository** in the dashboard and provide an ID, display name, and GitHub remote. Local CI creates a bare repository under `ci/repos/<id>.git`, fetches its branches, and creates `develop` at `main` if no `develop` exists yet.
 
-1. In `sample-app`: `git push ci feat/branch-name`
-2. The scheduler tests the merge of that branch into current `develop`.
-3. When the row is `passed`, click **Merge to develop**. Local `develop` becomes that commit.
-4. Click **Push to develop**. That sends local `develop` to GitHub `develop`.
-5. Click **PR develop → main**. That runs the tests for merging `develop` into `main`.
-6. When that row passes, click **Push main to GitHub**. That sends the tested commit to GitHub `main` and moves local `main` to the same commit.
+Add the shown path as a remote in your working copy:
 
-One test at a time. A failed run leaves `develop` and `main` where they were.
+```bash
+git remote add ci /absolute/path/to/local-ci/ci/repos/rxrise-server.git
+git push ci feature/my-change
+```
 
-## What is not built
+The repository selector switches the dashboard among all connected projects. Each project keeps its own run history and branch states; CI still runs one job at a time.
 
-Containers, and running the workflow file with `act`. The runner executes `npm ci` and `npm test`. Restarting the scheduler marks an in-flight run `failed`.
+## Branch status and promotion
+
+- `queued`, `running`, `passed`, and `failed` describe CI for the branch.
+- `ready to merge` means the exact candidate passed against the current `develop` and the branch has no more than 10 commits of drift.
+- `sync required` blocks normal validation and merging when a branch is more than 10 commits behind `develop`.
+- `ready to deploy` means the current `develop` passed validation against the current `main`. **Push main to GitHub** publishes that validated candidate.
+
+The drift limit defaults to 10 commits and can be changed with `LOCAL_CI_MAX_BRANCH_DRIFT`.
+
+Local CI never moves protected branches or pushes to GitHub automatically. Merge and push actions require a click in the dashboard.
+
+## Current MVP limits
+
+The runner currently executes `npm ci` and `npm test` in an isolated checkout directory. Running arbitrary GitHub Actions YAML with `act`, Docker runner isolation, GitHub branch synchronization/reconciliation, post-promotion `develop` reset, cancellation/retry controls, and the full failure-recovery model from [`INTENT.md`](./INTENT.md) remain to be implemented.

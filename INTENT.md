@@ -680,6 +680,419 @@ Ideally, moving to the server should mainly require changing the `ci` Git remote
 ---
 
 
+
+## Post-Promotion Develop Reset
+
+After a validated `develop -> main` promotion is successfully pushed to GitHub, Local CI should offer an explicit post-promotion action to reset `develop` to the newly promoted `main`.
+
+```text
+BEFORE
+
+main:     A--------------M
+           \            /
+develop:    B--C--D-----/
+
+AFTER
+
+main:                     M
+                          ^
+develop:                  M
+```
+
+This keeps `develop` and `main` aligned after a release and avoids carrying unnecessary branch-history divergence into future promotions.
+
+### User interaction
+
+The reset must not happen silently. After successfully pushing `main`, the dashboard should offer an explicit action such as:
+
+```text
+Promotion complete.
+
+main is now abc123.
+develop still points to def456.
+
+Reset develop to the newly promoted main?
+
+[Reset develop -> main]   [Not now]
+```
+
+### Concurrency guard
+
+Local CI must remember the GitHub `develop` SHA involved in the promotion. Before resetting, it must fetch GitHub again and verify that `origin/develop` still points to that exact SHA.
+
+```text
+remembered develop = D
+new main           = M
+        |
+        v
+fetch GitHub
+        |
+        v
+origin/develop still D?
+        |
+   yes  +--> reset local develop to M
+        |    update GitHub develop to M
+        |
+        no
+        v
+STOP: develop changed since promotion
+```
+
+If another developer has merged or pushed changes into GitHub `develop`, Local CI must refuse the reset.
+
+### Remote update safety
+
+Updating GitHub `develop` may require a history rewrite. It must use compare-and-swap / `--force-with-lease` semantics rather than an unrestricted force push.
+
+> Reset GitHub `develop` only if it still points to the exact SHA Local CI expects.
+
+Local CI must never use an unconditional force push for this operation.
+
+After a successful reset:
+
+```text
+local CI main    = M
+local CI develop = M
+GitHub main      = M
+GitHub develop   = M
+```
+
+Any validation based on the previous `develop` state becomes stale. This operation is part of the promotion lifecycle but remains optional and manually authorized.
+
+## CI Git Remote and Repository Registration
+
+Each project using Local CI has two Git remotes with different responsibilities:
+
+```text
+origin -> GitHub
+ci     -> bare Git repository managed by Local CI
+```
+
+The name `ci` is only a conventional Git remote name. Git does not assign any special meaning to it.
+
+### Local-first setup
+
+While Local CI runs on the same machine as the developer repository, the `ci` remote may simply be a filesystem path to the bare repository created and managed by Local CI.
+
+Example:
+
+```text
+~/code/
+├── my-app/
+└── local-ci/
+    └── ci/
+        └── repos/
+            └── my-app.git/
+```
+
+The developer repository can register it with:
+
+```bash
+git remote add ci /absolute/path/to/local-ci/ci/repos/my-app.git
+```
+
+Then:
+
+```bash
+git push ci feature/foo
+```
+
+pushes the branch into the Local CI bare repository. Its `post-receive` hook notifies the scheduler, which creates and queues the appropriate validation candidate.
+
+Conceptually:
+
+```text
+working repository
+       |
+       | git push ci feature/foo
+       v
+Local CI bare repository
+       |
+       | post-receive
+       v
+scheduler
+       |
+       v
+validation candidate
+```
+
+### Setup UX
+
+Users should not need to discover or construct the CI remote URL manually.
+
+When a repository is registered, Local CI should display the exact command needed to connect the working repository.
+
+Example:
+
+```text
+Repository registered successfully.
+
+CI remote:
+/Users/user/local-ci/ci/repos/my-app.git
+
+Add it to your project:
+
+git remote add ci /Users/user/local-ci/ci/repos/my-app.git
+```
+
+The setup script and/or dashboard should expose this value and make it easy to copy.
+
+### Future dedicated-server setup
+
+When Local CI moves to another machine, the same Git interface remains in place. Only the remote URL changes.
+
+For example:
+
+```bash
+git remote set-url ci ci@local-ci:/srv/local-ci/repos/my-app.git
+```
+
+or:
+
+```bash
+git remote set-url ci ssh://ci@192.168.1.50/srv/local-ci/repos/my-app.git
+```
+
+The developer workflow remains:
+
+```bash
+git push ci feature/foo
+```
+
+but transport changes from a local filesystem operation to Git over SSH.
+
+```text
+TODAY
+
+git push ci
+    |
+    v
+local filesystem
+    |
+    v
+bare repository
+
+
+FUTURE
+
+git push ci
+    |
+    v
+SSH / private network
+    |
+    v
+home server
+    |
+    v
+bare repository
+```
+
+This allows the Git ingress interface to remain stable as Local CI moves from the development machine to dedicated hardware.
+
+### Expected repository configuration
+
+A typical project should eventually look like:
+
+```text
+origin  git@github.com:organization/my-app.git
+ci      ci@local-ci:/srv/local-ci/repos/my-app.git
+```
+
+`origin` remains the shared GitHub repository used by the team. `ci` is the Local CI ingress repository used to submit branches for local validation and promotion.
+
+## Maximum Branch Drift Before Merge
+
+Local CI must prevent a PR/candidate from being merged when its source branch is too far behind the current target branch.
+
+### V1 policy
+
+The maximum allowed drift is **10 commits behind the target branch**.
+
+If a source branch is more than 10 commits behind its target, Local CI must not allow it to enter the normal merge/promotion path until the branch has been synchronized with the target.
+
+```text
+PR branch
+    |
+    | compare with current target
+    v
+commits behind target
+    |
+    +-- 0-10  -> eligible for validation/merge
+    |
+    +-- >10   -> BLOCKED: sync/rebase required
+```
+
+Example:
+
+```text
+PR #42
+Target: develop
+Behind by: 14 commits
+
+Status: SYNC REQUIRED
+
+This branch is more than 10 commits behind develop.
+Sync/rebase it with the current target before it can be merged.
+```
+
+### Sync/rebase action
+
+When the threshold is exceeded, the dashboard should expose a clear `Sync/Rebase with target` action.
+
+The purpose of this action is to bring the source branch onto the current target branch so that subsequent validation occurs against a reasonably current branch history.
+
+The synchronization operation must be explicit. Local CI must not silently rewrite a developer branch merely because it crossed the drift threshold.
+
+After synchronization/rebase:
+
+```text
+source branch
+      |
+      v
+current target incorporated
+      |
+      v
+behind count returns to 0
+      |
+      v
+previous validation becomes stale
+      |
+      v
+full CI validation required
+```
+
+Because rebasing rewrites the source branch history, the source SHA changes. Any candidate or successful validation associated with the previous source SHA must therefore be invalidated.
+
+### Merge guard
+
+The merge button must remain disabled when:
+
+```text
+commitsBehindTarget > 10
+```
+
+even if an older candidate previously passed CI.
+
+The merge invariant becomes:
+
+> A PR may be merged only when its exact candidate has passed the required CI suite against the current target SHA, its source SHA has not changed, its target SHA has not changed, and the source branch is no more than 10 commits behind the target branch.
+
+### Dashboard visibility
+
+For every PR/candidate, Local CI should display the branch drift explicitly:
+
+```text
+PR #42
+Source SHA:         a1b2c3
+Current develop:    f8e9d0
+Behind by:          7 commits
+Validated against:  f8e9d0
+Status:             READY
+```
+
+or:
+
+```text
+PR #43
+Source SHA:         112233
+Current develop:    f8e9d0
+Behind by:          14 commits
+Status:             SYNC REQUIRED
+```
+
+The 10-commit limit is the V1 policy and should be represented as a configurable policy value internally rather than scattered as a magic number throughout the codebase.
+
+## GitHub Synchronization and Divergence
+
+Local CI operates alongside normal GitHub development. Other developers may continue pushing branches to GitHub, opening PRs against `develop`, and merging there. Therefore GitHub's `develop` can change independently from Local CI.
+
+### Authority and synchronization
+
+GitHub `develop` is the authoritative shared branch for synchronization. Before Local CI creates or validates a merge candidate, it must fetch GitHub and compare local CI `develop` with `origin/develop`.
+
+```text
+SAME
+  -> Continue normally.
+
+GITHUB AHEAD
+  -> Fast-forward local CI develop to GitHub develop.
+
+LOCAL CI AHEAD
+  -> Preserve local commits. They may be a validated promotion
+     that has not yet been manually pushed.
+
+DIVERGED
+  -> Do not automatically merge, reset, rebase, or force-push.
+     Reconcile the histories and revalidate the resulting candidate.
+```
+
+Automatic synchronization must be **fast-forward-only** and must never manufacture an automatic merge commit.
+
+### Divergence
+
+Divergence can legitimately happen when Local CI has validated and manually merged `C`, but it has not yet been pushed, while another developer merges `D` into GitHub:
+
+```text
+             C  <- Local CI develop
+            /
+A -- B
+     \
+      D          <- GitHub develop
+```
+
+Local CI must treat this as a first-class `diverged` state. The previously validated local state cannot simply be pushed because it was validated against an older base.
+
+Local CI must reconcile the latest GitHub state with the pending local changes, create a new candidate, and run the complete required CI suite again:
+
+```text
+GitHub develop D
+       +
+pending local C
+       ↓
+reconciliation candidate E
+       ↓
+full CI validation
+       ↓
+eligible for manual promotion only if it passes
+```
+
+### GitHub-aware validation invariant
+
+> A candidate is valid only if its exact merge result was validated against the latest known GitHub `develop`, and the relevant source and target SHAs have not changed.
+
+Before validation:
+
+```text
+fetch GitHub
+    ↓
+compare origin/develop with local CI develop
+    ↓
+same       -> continue
+GH ahead   -> fast-forward local develop, then continue
+CI ahead   -> preserve pending local promotion
+diverged   -> reconcile and revalidate
+```
+
+A change to the relevant base SHA makes previous validation stale.
+
+### Recheck immediately before pushing
+
+Local CI must fetch GitHub again immediately before a manual push. If GitHub `develop` changed after validation began, the validation is stale and Local CI must synchronize/reconcile and revalidate before promotion.
+
+A successful test run never authorizes overwriting a GitHub branch that changed after the run began.
+
+### Synchronization safety rules
+
+- Fetching GitHub may happen automatically.
+- Local CI may automatically fast-forward local refs when GitHub is strictly ahead and no local commits would be lost.
+- Synchronization must not silently create merge commits.
+- Local CI must not automatically rebase developer branches.
+- Local CI must not automatically reset away validated local commits.
+- Local CI must not force-push `develop` or `main`.
+- Divergence must be explicit and must trigger reconciliation and revalidation.
+- Pushing to GitHub remains an explicit manual action.
+
+
 ## Chosen Technology Stack
 
 Keep the implementation intentionally simple and close to familiar technologies so the learning focus stays on Git, CI/CD, Docker, queues, isolation, and failure handling rather than on learning an unrelated application stack.
