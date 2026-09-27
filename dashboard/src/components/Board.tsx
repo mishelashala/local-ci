@@ -257,9 +257,9 @@ export function Board() {
     setPushNotice(null)
     try {
       const result = await postJson('/api/main', { repository: selectedRepositoryId })
-      if (!result.ok) setPushNotice({ ok: false, error: apiError(result.body, result.status, 'PR failed') })
+      if (!result.ok) setPushNotice({ ok: false, error: apiError(result.body, result.status, 'Validation failed') })
     } catch {
-      setPushNotice({ ok: false, error: 'PR request failed' })
+      setPushNotice({ ok: false, error: 'Validation request failed' })
     } finally {
       pushLock.current = false
       setOpeningMain(false)
@@ -349,7 +349,7 @@ export function Board() {
           )}
           {repoReady && canOpenMain && (
             <Button type="button" size="small" variant="outlined" disabled={openingMain || pushing || mainBusy} onClick={() => void openMain()} sx={{ flexShrink: 0 }}>
-              PR develop → main
+              Validate develop → main
             </Button>
           )}
           {repoReady && githubMainSha && (
@@ -379,7 +379,7 @@ export function Board() {
           GitHub develop: {repo.githubDevelop.relation} · local {shortSha(repo.githubDevelop.local ?? '')} · GitHub {shortSha(repo.githubDevelop.github ?? '')}
         </Typography>}
         <Typography variant="caption" color="text.secondary" sx={{ display: 'block', mt: 0.5 }}>
-          Merge moves local develop. Push to develop sends it to GitHub. PR develop → main runs tests, then Push main sends that commit to GitHub main.
+          Push to ci creates a local candidate and runs its tests. Merge moves local develop and reruns its tests. Push to develop sends it to GitHub after that run passes. Validate develop → main checks the release candidate, then Push main sends that commit to GitHub main.
         </Typography>
         {repo && <Typography variant="caption" color="text.secondary" sx={{ display: 'block', mt: 0.25, fontFamily: mono }}>
           git remote add ci {repo.barePath}
@@ -524,7 +524,7 @@ function RunSummary({
       <Box sx={{ display: 'flex', alignItems: 'center', gap: 1 }}>
         <StatusChip status={run.status} />
         <Typography sx={{ fontSize: 13, fontWeight: 600 }} noWrap>
-          {run.target === 'main' ? 'develop → main' : run.branch}
+          {run.target === 'main' ? 'develop → main' : run.target === 'post-merge' ? 'develop verification' : run.branch}
         </Typography>
       </Box>
       <Typography variant="caption" color="text.secondary" sx={{ display: 'block' }}>
@@ -541,7 +541,7 @@ function RunSummary({
           {run.candidateSha && run.baseSha ? ' · ' : null}
           {run.baseSha ? (
             <>
-              built against develop <Sha value={run.baseSha} />
+              built against {run.target === 'main' ? 'main' : 'develop'} <Sha value={run.baseSha} />
             </>
           ) : null}
         </Typography>
