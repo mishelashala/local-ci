@@ -2,7 +2,7 @@ import { useEffect, useRef, useState } from 'react'
 import { Box, Button, Chip, MenuItem, Select, Skeleton, Typography } from '@mui/material'
 import { useColorMode } from '../color-mode'
 import { formatAgo, mono, shortSha } from '../format'
-import { mainSha, mergeReady, pushDevelopSha, pushMainSha, type RepoSnapshot } from '../gates'
+import { mainSha, pushDevelopSha, pushMainSha, type RepoSnapshot } from '../gates'
 import { LogSkeleton, Panel, RunSkeleton, Sha, StatusChip } from '../ui'
 import { LiveLog } from './LiveLog'
 import { Onboarding } from './Onboarding'
@@ -23,9 +23,11 @@ type Run = {
   headSha: string | null
   candidateSha: string | null
   target: string | null
+  integratedAt: number | null
+  taskId: string | null
 }
 
-type RunInput = Omit<Run, 'startedAt' | 'finishedAt' | 'exitCode' | 'baseSha' | 'headSha' | 'candidateSha' | 'target'> & {
+type RunInput = Omit<Run, 'startedAt' | 'finishedAt' | 'exitCode' | 'baseSha' | 'headSha' | 'candidateSha' | 'target' | 'integratedAt' | 'taskId'> & {
   target?: string | null
   startedAt?: number | null
   finishedAt?: number | null
@@ -33,6 +35,8 @@ type RunInput = Omit<Run, 'startedAt' | 'finishedAt' | 'exitCode' | 'baseSha' | 
   baseSha?: string | null
   headSha?: string | null
   candidateSha?: string | null
+  integratedAt?: number | null
+  taskId?: string | null
 }
 
 type ApiBody = {
@@ -56,6 +60,8 @@ function normalize(run: RunInput): Run {
     headSha: run.headSha ?? null,
     candidateSha: run.candidateSha ?? null,
     target: run.target ?? null,
+    integratedAt: run.integratedAt ?? null,
+    taskId: run.taskId ?? null,
   }
 }
 
@@ -82,6 +88,7 @@ function normalizeRepo(body: RepoSnapshot): RepoSnapshot {
     githubMain: body.githubMain,
     syncError: body.syncError ?? null,
     pendingReset: body.pendingReset ?? null,
+    integration: body.integration ?? null,
   }
 }
 
@@ -247,7 +254,7 @@ export function Board() {
   const selected = runs.find((run) => run.id === selectedId) ?? null
   const developSha = pushDevelopSha(runs, repo)
   const githubMainSha = pushMainSha(runs, repo)
-  const canOpenMain = mainSha(repo) !== null && repo?.develop != null
+  const canOpenMain = mainSha(repo) !== null && repo?.develop != null && !repo?.integration
   const mainBusy = runs.some((run) => run.target === 'main' && (run.status === 'queued' || run.status === 'running'))
 
   async function openMain() {
@@ -293,7 +300,7 @@ export function Board() {
       now={now}
       selected={selected?.id === run.id}
       onSelect={() => setSelectedId(run.id)}
-      showMerge={mergeReady(run, repo)}
+      showMerge={false}
       merging={mergingId === run.id}
       mergeError={mergeErrors[run.id] ?? null}
       onMerge={() => void mergeRun(run.id)}
@@ -341,6 +348,7 @@ export function Board() {
           {repo && <Button type="button" size="small" disabled={pushing} onClick={() => void action('/api/sync', { repository: repo.id }, 'Sync')}>Sync GitHub</Button>}
           {repo?.githubDevelop?.relation === 'diverged' && <Button type="button" size="small" color="warning" disabled={pushing} onClick={() => void action('/api/reconcile', { repository: repo.id }, 'Validate reconciliation')}>Validate reconciliation</Button>}
           {repo?.pendingReset && <Button type="button" size="small" color="warning" variant="outlined" disabled={pushing} onClick={() => void action('/api/reset-develop', { repository: repo.id }, 'Reset develop')}>Reset develop to main</Button>}
+          {repo?.integration?.mode === 'frozen' && <Button type="button" size="small" variant="outlined" disabled={pushing} onClick={() => void action('/api/promotion/cancel', { repository: repo.id }, 'Release promotion')}>Release promotion</Button>}
           {!repoReady && (
             <>
               <Skeleton variant="rounded" width={150} height={30} />
@@ -378,8 +386,11 @@ export function Board() {
         {repo?.githubDevelop && <Typography variant="caption" color={repo.githubDevelop.relation === 'diverged' ? 'error.main' : 'text.secondary'} sx={{ display: 'block' }}>
           GitHub develop: {repo.githubDevelop.relation} · local {shortSha(repo.githubDevelop.local ?? '')} · GitHub {shortSha(repo.githubDevelop.github ?? '')}
         </Typography>}
+        {repo?.integration && <Typography variant="caption" color={repo.integration.mode === 'blocked' ? 'error.main' : 'warning.main'} sx={{ display: 'block' }}>
+          Integration {repo.integration.mode}: {repo.integration.reason}. Agent candidates wait for this repository.
+        </Typography>}
         <Typography variant="caption" color="text.secondary" sx={{ display: 'block', mt: 0.5 }}>
-          Push to ci creates a local candidate and runs its tests. Merge moves local develop and reruns its tests. Push to develop sends it to GitHub after that run passes. Validate develop → main checks the release candidate, then Push main sends that commit to GitHub main.
+          Push to ci runs checks against the current develop and integrates the exact tested commit automatically. Push to develop sends that healthy snapshot to staging. Validate develop → main freezes integration until you push main and reset develop, or cancel promotion.
         </Typography>
         {repo && <Typography variant="caption" color="text.secondary" sx={{ display: 'block', mt: 0.25, fontFamily: mono }}>
           git remote add ci {repo.barePath}
@@ -528,8 +539,9 @@ function RunSummary({
         </Typography>
       </Box>
       <Typography variant="caption" color="text.secondary" sx={{ display: 'block' }}>
-        {run.repository} · {run.oldSha === ZERO ? 'new branch' : 'update'} · <Sha value={run.newSha} /> · {formatAgo(now, run.createdAt)}
+        {run.repository} · {run.taskId ?? run.branch} · {run.oldSha === ZERO ? 'new branch' : 'update'} · <Sha value={run.newSha} /> · {formatAgo(now, run.createdAt)}
         {run.exitCode !== null ? ` · exit ${run.exitCode}` : ''}
+        {run.integratedAt ? ' · integrated locally' : ''}
       </Typography>
       {(run.candidateSha || run.baseSha) && (
         <Typography variant="caption" color="text.secondary" sx={{ display: 'block' }}>
