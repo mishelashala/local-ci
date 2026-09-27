@@ -1,4 +1,7 @@
 import Fastify from 'fastify'
+import { copyFileSync, createReadStream, existsSync, mkdirSync, readdirSync, rmSync, statSync } from 'node:fs'
+import { execFileSync } from 'node:child_process'
+import { extname, join, resolve } from 'node:path'
 import { createTemporaryMerge } from './git-merge.ts'
 import {
   clearRepoCache,
@@ -12,7 +15,7 @@ import {
   readOrigin,
   setOrigin,
 } from './git-repo.ts'
-import { bareRepo } from './paths.ts'
+import { bareRepo, dashboardDistRoot, hookSourceRoot, repositoryRoot } from './paths.ts'
 import {
   getRun,
   findPassedMain,
@@ -21,11 +24,19 @@ import {
   listRuns,
   markRunStale,
   recordCandidate,
+  getRepository,
+  listRepositories,
+  recentRunsForRepository,
+  saveRepository,
+  listRunsForRepository,
 } from './db.ts'
 import { startWorker } from './worker.ts'
 
 const ORIGIN_HELP = 'Save the GitHub remote on the setup screen.'
 const GITHUB_REMOTE = /^(?:git@[\w.-]+:[\w./~-]+|ssh:\/\/git@[\w.-]+\/[\w./~-]+|https:\/\/[\w.-]+\/[\w./~-]+)(?:\.git)?$/
+const REPOSITORY_ID = /^[a-z0-9][a-z0-9._-]{0,63}$/
+const configuredDrift = Number(process.env.LOCAL_CI_MAX_BRANCH_DRIFT ?? 10)
+const MAX_BRANCH_DRIFT = Number.isInteger(configuredDrift) && configuredDrift >= 0 ? configuredDrift : 10
 const DELETED = '0000000000000000000000000000000000000000'
 const SHA = /^[0-9a-f]{40}$/
 const REF = /^refs\/heads\/[A-Za-z0-9._/-]+$/
@@ -52,13 +63,111 @@ function asPush(body: PushBody) {
   }
 }
 
-const app = Fastify({ logger: true })
+const app = Fastify({
+  logger: true,
+  rewriteUrl: (request) => {
+    const url = request.url ?? '/'
+    return url.startsWith('/api/') ? url.slice(4) : url
+  },
+})
+
+function discoverExistingRepositories() {
+  mkdirSync(repositoryRoot, { recursive: true })
+  for (const entry of readdirSync(repositoryRoot)) {
+    if (!entry.endsWith('.git')) continue
+    const id = entry.slice(0, -4)
+    const path = join(repositoryRoot, entry)
+    try {
+      if (!statSync(join(path, 'HEAD')).isFile()) continue
+      const origin = readOrigin(path)
+      saveRepository({ id, name: id, barePath: path, origin })
+    } catch {
+      // Ignore folders that are not initialized bare repositories.
+    }
+  }
+}
+
+function repositoryFor(id: unknown) {
+  if (typeof id === 'string' && REPOSITORY_ID.test(id)) return getRepository(id)
+  return undefined
+}
+
+async function snapshotFor(repository: NonNullable<ReturnType<typeof getRepository>>) {
+  const snapshot = await currentRepoSnapshot(repository.barePath, repository.id, repository.name)
+  const runs = recentRunsForRepository(repository.id)
+  const branches = snapshot.branches.map((branch) => {
+    const latest = runs.find((run) => run.branch === branch.name && run.target !== 'main')
+    const readyMerge = latest?.status === 'passed' && latest.baseSha === snapshot.develop && latest.headSha === branch.sha
+    const mainRun = runs.find((run) => run.target === 'main' && run.status === 'passed' && run.baseSha === snapshot.branches.find((item) => item.name === 'main')?.sha && run.headSha === snapshot.develop)
+    let status: typeof branch.status = 'idle'
+    if (branch.name === 'develop' && mainRun?.candidateSha) status = 'ready-to-deploy'
+    else if (readyMerge && (branch.behindDevelop ?? 0) <= MAX_BRANCH_DRIFT) status = 'ready-to-merge'
+    else if ((branch.behindDevelop ?? 0) > MAX_BRANCH_DRIFT) status = 'sync-required'
+    else if (latest?.status === 'queued' || latest?.status === 'running' || latest?.status === 'failed') status = latest.status
+    else if (latest?.status === 'passed') status = 'passed'
+    return { ...branch, status }
+  })
+  return { ...snapshot, barePath: repository.barePath, maxBranchDrift: MAX_BRANCH_DRIFT, branches }
+}
+
+discoverExistingRepositories()
 
 app.get('/health', async () => ({ ok: true }))
 
-app.get('/repo', async () => currentRepoSnapshot(bareRepo))
+app.get('/repositories', async () => ({ repositories: await Promise.all(listRepositories().map(snapshotFor)) }))
 
-app.get('/runs', async () => ({ runs: listRuns() }))
+app.get<{ Querystring: { repository?: string } }>('/repo', async (request, reply) => {
+  const selected = repositoryFor(request.query.repository) ?? listRepositories()[0]
+  if (!selected) return reply.code(404).send({ error: 'no repositories registered' })
+  return snapshotFor(selected)
+})
+
+app.get<{ Querystring: { repository?: string } }>('/runs', async (request, reply) => {
+  if (request.query.repository) {
+    if (!repositoryFor(request.query.repository)) return reply.code(404).send({ error: 'repository not found' })
+    return { runs: listRunsForRepository(request.query.repository) }
+  }
+  return { runs: listRuns() }
+})
+
+app.post('/repositories', async (request, reply) => {
+  const body = request.body as { id?: unknown; name?: unknown; github?: unknown } | null
+  const id = typeof body?.id === 'string' ? body.id.trim().toLowerCase() : ''
+  const name = typeof body?.name === 'string' ? body.name.trim() : id
+  const github = typeof body?.github === 'string' ? body.github.trim() : ''
+  if (!REPOSITORY_ID.test(id)) return reply.code(400).send({ error: 'Use a repository ID with letters, numbers, dots, underscores, or hyphens.' })
+  if (name.length < 1 || name.length > 100) return reply.code(400).send({ error: 'Repository name is required.' })
+  if (!GITHUB_REMOTE.test(github)) return reply.code(400).send({ error: 'Use a git@, ssh://, or https:// remote.' })
+  if (getRepository(id)) return reply.code(409).send({ error: 'repository is already registered' })
+  const path = bareRepo(id)
+  mkdirSync(repositoryRoot, { recursive: true })
+  let initialized = false
+  try {
+    execFileSync('git', ['init', '--bare', '-b', 'main', path], { stdio: 'ignore' })
+    initialized = true
+    execFileSync('git', [`--git-dir=${path}`, 'remote', 'add', 'origin', github], { stdio: 'ignore' })
+    execFileSync('git', [`--git-dir=${path}`, 'fetch', '--prune', 'origin', '+refs/heads/*:refs/heads/*'], { stdio: 'ignore', env: { ...process.env, GIT_TERMINAL_PROMPT: '0' } })
+    if (!readBranchSha(path, 'main')) {
+      const head = execFileSync('git', [`--git-dir=${path}`, 'ls-remote', '--symref', 'origin', 'HEAD'], { encoding: 'utf8' })
+        .match(/ref: refs\/heads\/([^\s]+)/)?.[1]
+      const headSha = head ? readBranchSha(path, head) : null
+      if (headSha) execFileSync('git', [`--git-dir=${path}`, 'update-ref', 'refs/heads/main', headSha], { stdio: 'ignore' })
+    }
+    const main = readBranchSha(path, 'main')
+    if (main && !readBranchSha(path, 'develop')) execFileSync('git', [`--git-dir=${path}`, 'update-ref', 'refs/heads/develop', main], { stdio: 'ignore' })
+    for (const hook of ['post-receive', 'pre-receive']) {
+      copyFileSync(join(hookSourceRoot, hook), join(path, 'hooks', hook))
+      execFileSync('chmod', ['+x', join(path, 'hooks', hook)])
+    }
+      const repository = saveRepository({ id, name, barePath: path, origin: github })
+      clearRepoCache()
+    return reply.code(201).send({ repository: await snapshotFor(repository!) })
+  } catch (error) {
+    if (initialized) rmSync(path, { recursive: true, force: true })
+    const message = error instanceof Error ? error.message : String(error)
+    return reply.code(502).send({ error: `Could not connect repository: ${message}` })
+  }
+})
 
 app.get<{ Params: { id: string } }>('/runs/:id/logs', async (request, reply) => {
   const run = getRun(request.params.id)
@@ -75,12 +184,15 @@ app.get<{ Params: { id: string } }>('/runs/:id', async (request, reply) => {
 app.post('/events', async (request, reply) => {
   const parsed = asPush(request.body as PushBody)
   if (typeof parsed === 'string') return reply.code(400).send({ error: parsed })
+  const repository = repositoryFor(parsed.repository)
+  if (!repository) return reply.code(404).send({ error: 'repository is not registered' })
+  const repoPath = repository.barePath
   if (parsed.ref === 'refs/heads/develop' || parsed.ref === 'refs/heads/main') {
     return reply.code(400).send({ error: 'that branch moves only from the dashboard' })
   }
   if (parsed.newSha === DELETED) return { ignored: 'branch delete' }
 
-  const developSha = readDevelopSha(bareRepo)
+  const developSha = readDevelopSha(repoPath)
   if (!developSha) {
     const run = recordCandidate({
       ...parsed,
@@ -93,8 +205,21 @@ app.post('/events', async (request, reply) => {
     return reply.code(201).send({ run })
   }
 
+  const behind = Number(execFileSync('git', [`--git-dir=${repoPath}`, 'rev-list', '--count', `${parsed.newSha}..${developSha}`], { encoding: 'utf8' }).trim())
+  if (behind > MAX_BRANCH_DRIFT) {
+    const run = recordCandidate({
+      ...parsed,
+      baseSha: developSha,
+      headSha: parsed.newSha,
+      candidateSha: null,
+      status: 'failed',
+      logLine: `branch is ${behind} commits behind develop; sync/rebase is required before validation (limit ${MAX_BRANCH_DRIFT})`,
+    })
+    return reply.code(201).send({ run })
+  }
+
   const merged = await createTemporaryMerge({
-    bareRepo,
+    bareRepo: repoPath,
     baseSha: developSha,
     headSha: parsed.newSha,
   })
@@ -128,6 +253,9 @@ app.post('/merges', async (request, reply) => {
   }
   const run = getRun(body.runId)
   if (!run) return reply.code(404).send({ error: 'run not found' })
+  const repository = repositoryFor(run.repository)
+  if (!repository) return reply.code(404).send({ error: 'repository is not registered' })
+  const repoPath = repository.barePath
   if (run.target === 'main') {
     return reply.code(409).send({ error: 'this run promotes main. Use Push main to GitHub' })
   }
@@ -137,19 +265,21 @@ app.post('/merges', async (request, reply) => {
   if (!run.candidateSha || !SHA.test(run.candidateSha) || !run.baseSha || !SHA.test(run.baseSha) || !run.headSha || !SHA.test(run.headSha)) {
     return reply.code(409).send({ error: 'run is missing merge SHAs' })
   }
-  const developSha = readDevelopSha(bareRepo)
+  const developSha = readDevelopSha(repoPath)
   if (developSha !== run.baseSha) {
     if (developSha !== run.candidateSha) markRunStale(run.id)
     return reply.code(409).send({ error: 'develop moved since this run' })
   }
-  const head = readBranchSha(bareRepo, run.branch)
+  const head = readBranchSha(repoPath, run.branch)
   if (head !== run.headSha) {
     return reply.code(409).send({ error: 'the branch tip moved since this run' })
   }
+  const behind = Number(execFileSync('git', [`--git-dir=${repoPath}`, 'rev-list', '--count', `${run.headSha}..${developSha}`], { encoding: 'utf8' }).trim())
+  if (behind > MAX_BRANCH_DRIFT) return reply.code(409).send({ error: `branch is ${behind} commits behind develop; sync/rebase required` })
   try {
-    compareAndSwapDevelop(bareRepo, run.candidateSha, run.baseSha)
+    compareAndSwapDevelop(repoPath, run.candidateSha, run.baseSha)
   } catch {
-    const current = readDevelopSha(bareRepo)
+    const current = readDevelopSha(repoPath)
     if (current !== run.candidateSha) markRunStale(run.id)
     return reply.code(409).send({ error: 'develop moved since this run' })
   }
@@ -158,25 +288,32 @@ app.post('/merges', async (request, reply) => {
 })
 
 app.post('/setup', async (request, reply) => {
-  const body = request.body as { github?: unknown } | null
+  const body = request.body as { repository?: unknown; github?: unknown } | null
   const github = typeof body?.github === 'string' ? body.github.trim() : ''
   if (!GITHUB_REMOTE.test(github)) {
     return reply.code(400).send({ error: 'Use a git@, ssh://, or https:// remote' })
   }
-  setOrigin(bareRepo, github)
-  return reply.code(201).send({ origin: github })
+  const repository = repositoryFor(body?.repository) ?? listRepositories()[0]
+  if (!repository) return reply.code(404).send({ error: 'repository not found' })
+  setOrigin(repository.barePath, github)
+  saveRepository({ ...repository, origin: github })
+  return reply.code(201).send({ origin: github, repository: repository.id })
 })
 
-app.post('/main', async (_request, reply) => {
-  const mainSha = readBranchSha(bareRepo, 'main')
-  const developSha = readDevelopSha(bareRepo)
+app.post('/main', async (request, reply) => {
+  const body = request.body as { repository?: unknown } | null
+  const repository = repositoryFor(body?.repository) ?? listRepositories()[0]
+  if (!repository) return reply.code(404).send({ error: 'repository not found' })
+  const repoPath = repository.barePath
+  const mainSha = readBranchSha(repoPath, 'main')
+  const developSha = readDevelopSha(repoPath)
   if (!mainSha || !developSha) {
     return reply.code(409).send({ error: 'main or develop is missing. Run ./scripts/setup-ci.sh' })
   }
-  const merged = await createTemporaryMerge({ bareRepo, baseSha: mainSha, headSha: developSha })
+  const merged = await createTemporaryMerge({ bareRepo: repoPath, baseSha: mainSha, headSha: developSha })
   if ('conflict' in merged) {
     const run = recordCandidate({
-      repository: 'sample-app',
+      repository: repository.id,
       ref: 'refs/heads/develop',
       oldSha: mainSha,
       newSha: developSha,
@@ -191,7 +328,7 @@ app.post('/main', async (_request, reply) => {
   }
   const sha = merged.sha.toLowerCase()
   const run = recordCandidate({
-    repository: 'sample-app',
+    repository: repository.id,
     ref: 'refs/heads/develop',
     oldSha: mainSha,
     newSha: sha,
@@ -205,42 +342,71 @@ app.post('/main', async (_request, reply) => {
 })
 
 app.post('/pushes', async (request, reply) => {
-  const body = request.body as { branch?: unknown } | null
+  const body = request.body as { repository?: unknown; branch?: unknown } | null
   if (!body || (body.branch !== 'develop' && body.branch !== 'main')) {
     return reply.code(400).send({ error: 'branch must be develop or main' })
   }
-  const origin = readOrigin(bareRepo)
+  const repository = repositoryFor(body.repository) ?? listRepositories()[0]
+  if (!repository) return reply.code(404).send({ error: 'repository not found' })
+  const repoPath = repository.barePath
+  const origin = readOrigin(repoPath)
   if (!origin) return reply.code(409).send({ error: ORIGIN_HELP })
 
   if (body.branch === 'develop') {
-    const developSha = readDevelopSha(bareRepo)
-    if (!developSha || !hasPassedCandidate(developSha)) {
+    const developSha = readDevelopSha(repoPath)
+    if (!developSha || !hasPassedCandidate(repository.id, developSha)) {
       return reply.code(409).send({ error: 'develop is not a passed merge commit' })
     }
-    const pushed = await pushDevelop(bareRepo)
+    const pushed = await pushDevelop(repoPath)
     if ('error' in pushed) return reply.code(502).send({ error: pushed.error })
     clearRepoCache()
     return reply.code(201).send({ sha: developSha, remote: origin })
   }
 
-  const mainSha = readBranchSha(bareRepo, 'main')
-  const developSha = readDevelopSha(bareRepo)
+  const mainSha = readBranchSha(repoPath, 'main')
+  const developSha = readDevelopSha(repoPath)
   if (!mainSha || !developSha) {
     return reply.code(409).send({ error: 'main or develop is missing. Run ./scripts/setup-ci.sh' })
   }
-  const candidate = findPassedMain(mainSha, developSha)
+  const candidate = findPassedMain(repository.id, mainSha, developSha)
   if (!candidate) return reply.code(409).send({ error: 'develop → main has not passed against the current branches' })
-  const pushed = await pushRef(bareRepo, candidate, 'refs/heads/main')
+  const pushed = await pushRef(repoPath, candidate, 'refs/heads/main')
   if ('error' in pushed) return reply.code(502).send({ error: pushed.error })
   if (candidate !== mainSha) {
     try {
-      compareAndSwapRef(bareRepo, 'refs/heads/main', candidate, mainSha)
+      compareAndSwapRef(repoPath, 'refs/heads/main', candidate, mainSha)
     } catch {
       return reply.code(409).send({ error: 'GitHub main updated, but local main moved during the push' })
     }
   }
   clearRepoCache()
   return reply.code(201).send({ sha: candidate, remote: origin })
+})
+
+const mimeTypes: Record<string, string> = {
+  '.css': 'text/css; charset=utf-8',
+  '.html': 'text/html; charset=utf-8',
+  '.ico': 'image/x-icon',
+  '.js': 'text/javascript; charset=utf-8',
+  '.json': 'application/json; charset=utf-8',
+  '.png': 'image/png',
+  '.svg': 'image/svg+xml',
+  '.woff': 'font/woff',
+  '.woff2': 'font/woff2',
+}
+
+app.get('/*', async (request, reply) => {
+  const requested = request.params as { '*': string }
+  const relative = decodeURIComponent(requested['*'] ?? '')
+  const candidate = resolve(dashboardDistRoot, relative || 'index.html')
+  const safeRoot = resolve(dashboardDistRoot) + '/'
+  const file = candidate.startsWith(safeRoot) && existsSync(candidate) && statSync(candidate).isFile()
+    ? candidate
+    : join(dashboardDistRoot, 'index.html')
+  if (!existsSync(file)) return reply.code(503).type('text/plain').send('Dashboard is building. Start Local CI with npm run dev and try again.')
+  reply.type(mimeTypes[extname(file)] ?? 'application/octet-stream')
+  if (extname(file) === '.html') reply.header('cache-control', 'no-cache')
+  return reply.send(createReadStream(file))
 })
 
 startWorker()

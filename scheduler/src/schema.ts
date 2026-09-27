@@ -27,3 +27,11 @@ export const logs = sqliteTable('logs', {
   line: text('line').notNull(),
   createdAt: integer('created_at').notNull(),
 })
+
+export const repositories = sqliteTable('repositories', {
+  id: text('id').primaryKey(),
+  name: text('name').notNull(),
+  barePath: text('bare_path').notNull(),
+  origin: text('origin'),
+  createdAt: integer('created_at').notNull(),
+})

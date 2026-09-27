@@ -64,24 +64,27 @@ async function gitText(bareRepo: string, args: string[]): Promise<string> {
   return stdout
 }
 
-let snapshotInflight: Promise<RepoSnapshot> | null = null
-let snapshotCache: { at: number; value: RepoSnapshot } | null = null
+const snapshotInflight = new Map<string, Promise<RepoSnapshot>>()
+const snapshotCache = new Map<string, { at: number; value: RepoSnapshot }>()
 
-export function currentRepoSnapshot(bareRepo: string): Promise<RepoSnapshot> {
-  if (snapshotCache && Date.now() - snapshotCache.at < 1000) return Promise.resolve(snapshotCache.value)
-  if (snapshotInflight) return snapshotInflight
-  snapshotInflight = readRepoSnapshotFast(bareRepo)
+export function currentRepoSnapshot(bareRepo: string, id: string, name = id): Promise<RepoSnapshot> {
+  const cached = snapshotCache.get(bareRepo)
+  if (cached && Date.now() - cached.at < 1000) return Promise.resolve(cached.value)
+  const inflight = snapshotInflight.get(bareRepo)
+  if (inflight) return inflight
+  const next = readRepoSnapshotFast(bareRepo, id, name)
     .then((value) => {
-      snapshotCache = { at: Date.now(), value }
+      snapshotCache.set(bareRepo, { at: Date.now(), value })
       return value
     })
     .finally(() => {
-      snapshotInflight = null
+      snapshotInflight.delete(bareRepo)
     })
-  return snapshotInflight
+  snapshotInflight.set(bareRepo, next)
+  return next
 }
 
-async function readRepoSnapshotFast(bareRepo: string): Promise<RepoSnapshot> {
+async function readRepoSnapshotFast(bareRepo: string, id: string, name: string): Promise<RepoSnapshot> {
   const [develop, branchText, origin] = await Promise.all([
     gitText(bareRepo, ['rev-parse', '--verify', '--end-of-options', 'refs/heads/develop']).then(asSha).catch(() => null),
     gitText(bareRepo, ['for-each-ref', '--format=%(refname:short)%09%(objectname)', 'refs/heads']).catch(() => ''),
@@ -90,7 +93,7 @@ async function readRepoSnapshotFast(bareRepo: string): Promise<RepoSnapshot> {
       return trimmed.length > 0 ? trimmed : null
     }).catch(() => null),
   ])
-  const branches = branchText.split('\n').flatMap((line) => {
+  const refs = branchText.split('\n').flatMap((line) => {
     if (line.length === 0) return []
     const tab = line.indexOf('\t')
     if (tab <= 0) return []
@@ -99,34 +102,18 @@ async function readRepoSnapshotFast(bareRepo: string): Promise<RepoSnapshot> {
     if (!sha) return []
     return [{ name, sha }]
   })
-  return { develop, branches, origin }
-}
-
-export function readRepoSnapshot(bareRepo: string): RepoSnapshot {
-  let branches: RepoSnapshot['branches'] = []
-  try {
-    const text = gitSync(bareRepo, ['for-each-ref', '--format=%(refname:short)%09%(objectname)', 'refs/heads'])
-    branches = text.split('\n').flatMap((line) => {
-      if (line.length === 0) return []
-      const tab = line.indexOf('\t')
-      if (tab <= 0) return []
-      const name = line.slice(0, tab)
-      const sha = asSha(line.slice(tab + 1))
-      if (!sha) return []
-      return [{ name, sha }]
-    })
-  } catch {
-    branches = []
-  }
-  return {
-    develop: readDevelopSha(bareRepo),
-    branches,
-    origin: readOrigin(bareRepo),
-  }
+  const branches = await Promise.all(refs.map(async ({ name, sha }) => {
+    const [ahead, behind] = await Promise.all([
+      develop ? gitText(bareRepo, ['rev-list', '--count', `${develop}..${sha}`]).then((n) => Number(n.trim())).catch(() => null) : Promise.resolve(null),
+      develop ? gitText(bareRepo, ['rev-list', '--count', `${sha}..${develop}`]).then((n) => Number(n.trim())).catch(() => null) : Promise.resolve(null),
+    ])
+    return { name, sha, aheadOfDevelop: ahead, behindDevelop: behind, status: 'idle' as const }
+  }))
+  return { id, name, barePath: bareRepo, maxBranchDrift: 10, develop, branches, origin }
 }
 
 export function clearRepoCache() {
-  snapshotCache = null
+  snapshotCache.clear()
 }
 
 export function compareAndSwapRef(bareRepo: string, ref: string, newSha: string, oldSha: string) {
