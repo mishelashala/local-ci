@@ -10,6 +10,7 @@ export type RepoSnapshot = {
   githubMain?: { local: string | null; github: string | null; relation: string }
   syncError?: string | null
   pendingReset?: { mainSha: string; developSha: string; githubDevelopSha: string | null } | null
+  integration?: { mode: 'frozen' | 'blocked'; developSha: string | null; reason: string | null } | null
 }
 
 type MergeCandidate = {
@@ -19,6 +20,7 @@ type MergeCandidate = {
   headSha: string | null
   candidateSha: string | null
   target?: string | null
+  integratedAt?: number | null
 }
 
 const SHA40 = /^[0-9a-f]{40}$/i
@@ -28,22 +30,15 @@ function isSha40(value: string | null | undefined): value is string {
 }
 
 export function mergeReady(run: MergeCandidate, repo: RepoSnapshot | null): boolean {
-  if (repo === null || run.target === 'main' || run.target === 'reconcile' || run.target === 'post-merge' || repo.githubDevelop?.relation === 'diverged') return false
-  const branch = repo.branches.find((item) => item.name === run.branch)
-  return (
-    run.status === 'passed' &&
-    isSha40(run.candidateSha) &&
-    repo.develop === run.baseSha &&
-    branch?.sha === run.headSha && (branch.behindDevelop ?? 0) <= repo.maxBranchDrift
-  )
+  void run; void repo
+  return false // Integration is automatic; kept for older UI clients.
 }
 
 export function pushDevelopSha(runs: readonly MergeCandidate[], repo: RepoSnapshot | null): string | null {
   if (repo === null || !isSha40(repo.develop)) return null
   const develop = repo.develop
-  const candidate = runs.some((run) => run.status === 'passed' && (run.target === 'develop' || run.target === 'reconcile' || !run.target) && run.candidateSha === develop)
-  const postMerge = runs.some((run) => run.status === 'passed' && run.target === 'post-merge' && run.candidateSha === develop)
-  return candidate && postMerge ? develop : null
+  const candidate = runs.some((run) => run.status === 'passed' && run.target === 'develop' && run.integratedAt && run.candidateSha === develop)
+  return candidate && !repo.integration ? develop : null
 }
 
 export function mainSha(repo: RepoSnapshot | null): string | null {
