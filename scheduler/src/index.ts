@@ -21,6 +21,7 @@ import {
   getRun,
   findPassedMain,
   hasPassedCandidate,
+  hasPassedPostMerge,
   listLogLines,
   listRuns,
   markRunStale,
@@ -220,8 +221,9 @@ app.post<{ Params: { id: string } }>('/runs/:id/retry', async (request, reply) =
   if (!repository) return reply.code(404).send({ error: 'repository not found' })
   try { await synchronizeDevelop(repository.barePath, true) }
   catch (error) { return reply.code(502).send({ error: `GitHub synchronization failed: ${String(error)}` }) }
-  const base = run.target === 'main' ? readBranchSha(repository.barePath, 'main') : run.target === 'reconcile' ? remoteSha(repository.barePath, 'develop') : readDevelopSha(repository.barePath)
+  const base = run.target === 'main' ? readBranchSha(repository.barePath, 'main') : run.target === 'reconcile' ? remoteSha(repository.barePath, 'develop') : run.target === 'post-merge' ? run.baseSha : readDevelopSha(repository.barePath)
   const head = run.target === 'main' || run.target === 'reconcile' ? readDevelopSha(repository.barePath) : readBranchSha(repository.barePath, run.branch)
+  if (run.target === 'post-merge' && readDevelopSha(repository.barePath) !== run.candidateSha) return reply.code(409).send({ error: 'develop moved since the post-merge run' })
   if (base !== run.baseSha || head !== run.headSha) return reply.code(409).send({ error: 'branch SHAs moved; create a new validation' })
   const next = retryRun(run.id)
   if (!next) return reply.code(409).send({ error: 'run has no reusable candidate' })
@@ -405,6 +407,7 @@ app.post('/merges', async (request, reply) => {
     return reply.code(409).send({ error: 'this run promotes main. Use Push main to GitHub' })
   }
   if (run.target === 'reconcile') return reply.code(409).send({ error: 'Use Reconcile develop for this run' })
+  if (run.target === 'post-merge') return reply.code(409).send({ error: 'post-merge runs cannot be merged again' })
   try {
     const sync = await synchronizeDevelop(repoPath, true)
     if (sync.relation === 'diverged') return reply.code(409).send({ error: 'develop diverged from GitHub; reconcile first' })
@@ -434,7 +437,12 @@ app.post('/merges', async (request, reply) => {
     return reply.code(409).send({ error: 'develop moved since this run' })
   }
   clearRepoCache()
-  return reply.code(201).send({ develop: run.candidateSha })
+  const verification = recordCandidate({
+    repository: repository.id, ref: run.ref, oldSha: run.baseSha, newSha: run.candidateSha,
+    baseSha: run.baseSha, headSha: run.headSha, candidateSha: run.candidateSha,
+    target: 'post-merge', status: 'queued',
+  })
+  return reply.code(201).send({ develop: run.candidateSha, verification })
 })
 
 app.post('/setup', async (request, reply) => {
@@ -516,8 +524,8 @@ app.post('/pushes', async (request, reply) => {
 
   if (body.branch === 'develop') {
     const developSha = readDevelopSha(repoPath)
-    if (!developSha || !hasPassedCandidate(repository.id, developSha)) {
-      return reply.code(409).send({ error: 'develop is not a passed merge commit' })
+    if (!developSha || !hasPassedCandidate(repository.id, developSha) || !hasPassedPostMerge(repository.id, developSha)) {
+      return reply.code(409).send({ error: 'develop requires a passed candidate and a passed post-merge verification before pushing' })
     }
     const pushed = await pushDevelop(repoPath)
     if ('error' in pushed) return reply.code(502).send({ error: pushed.error })
