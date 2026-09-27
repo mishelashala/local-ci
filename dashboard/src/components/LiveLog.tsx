@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from 'react'
-import { Box, Typography } from '@mui/material'
+import { Box, Button, Typography } from '@mui/material'
 import { AnsiText } from '../ansi'
 import { formatAgo, formatDuration, mono } from '../format'
 import { LogSkeleton, Panel, Sha, StatusChip } from '../ui'
@@ -15,6 +15,7 @@ type LiveRun = {
   finishedAt: number | null
   exitCode: number | null
 }
+type Workflow = { path: string; status: string; startedAt: number | null; finishedAt: number | null; exitCode: number | null }
 
 function elapsed(run: LiveRun, now: number): string {
   if (run.startedAt === null) return formatAgo(now, run.createdAt)
@@ -24,11 +25,15 @@ function elapsed(run: LiveRun, now: number): string {
 export function LiveLog({ runId }: { runId: string }) {
   const [run, setRun] = useState<LiveRun | null>(null)
   const [lines, setLines] = useState<string[]>([])
+  const [workflows, setWorkflows] = useState<Workflow[]>([])
+  const [selectedWorkflow, setSelectedWorkflow] = useState<string | null>(null)
   const [ready, setReady] = useState(false)
   const [now, setNow] = useState(() => Date.now())
   const [error, setError] = useState(false)
   const scroller = useRef<HTMLDivElement>(null)
   const seen = useRef(0)
+
+  useEffect(() => { setSelectedWorkflow(null) }, [runId])
 
   useEffect(() => {
     let cancel = false
@@ -40,13 +45,15 @@ export function LiveLog({ runId }: { runId: string }) {
 
     const tick = async () => {
       try {
-        const [runResponse, logResponse] = await Promise.all([
+        const [runResponse, logResponse, workflowsResponse] = await Promise.all([
           fetch(`/api/runs/${runId}`),
-          fetch(`/api/runs/${runId}/logs`),
+          fetch(`/api/runs/${runId}/logs${selectedWorkflow ? `?workflow=${encodeURIComponent(selectedWorkflow)}` : ''}`),
+          fetch(`/api/runs/${runId}/workflows`),
         ])
-        if (!runResponse.ok || !logResponse.ok) throw new Error(String(runResponse.status))
+        if (!runResponse.ok || !logResponse.ok || !workflowsResponse.ok) throw new Error(String(runResponse.status))
         const runBody = (await runResponse.json()) as { run: LiveRun }
         const logBody = (await logResponse.json()) as { lines: string[] }
+        const workflowBody = (await workflowsResponse.json()) as { workflows: Workflow[] }
         if (cancel) return
         setRun({
           ...runBody.run,
@@ -55,6 +62,7 @@ export function LiveLog({ runId }: { runId: string }) {
           exitCode: runBody.run.exitCode ?? null,
         })
         setLines(logBody.lines)
+        setWorkflows(workflowBody.workflows)
         setNow(Date.now())
         setReady(true)
         setError(false)
@@ -72,7 +80,7 @@ export function LiveLog({ runId }: { runId: string }) {
       cancel = true
       window.clearInterval(id)
     }
-  }, [runId])
+  }, [runId, selectedWorkflow])
 
   useEffect(() => {
     if (lines.length === seen.current) return
@@ -122,6 +130,16 @@ export function LiveLog({ runId }: { runId: string }) {
             </>
           )}
         </Box>
+        {workflows.length > 0 && <Box sx={{ px: 1, py: 0.5, borderBottom: '1px solid', borderColor: 'divider', maxHeight: 145, overflow: 'auto' }}>
+          <Button size="small" variant={selectedWorkflow === null ? 'contained' : 'text'} onClick={() => setSelectedWorkflow(null)}>All logs</Button>
+          {workflows.map((workflow) => <Box key={workflow.path} sx={{ display: 'flex', alignItems: 'center', gap: 0.5 }}>
+            <StatusChip status={workflow.status} />
+            <Button size="small" sx={{ textTransform: 'none', justifyContent: 'flex-start' }}
+              variant={selectedWorkflow === workflow.path ? 'contained' : 'text'}
+              onClick={() => setSelectedWorkflow(workflow.path)}>{workflow.path}</Button>
+            {workflow.exitCode !== null && <Typography variant="caption">exit {workflow.exitCode}</Typography>}
+          </Box>)}
+        </Box>}
         <Box
           ref={scroller}
           sx={{ flex: 1, minHeight: 0, overflow: 'auto', px: 1.5, py: 1, fontFamily: mono, fontSize: 12.5, lineHeight: 1.55 }}

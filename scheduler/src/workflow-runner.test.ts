@@ -37,16 +37,23 @@ test('feature push uses local PR workflows and the exact merge event', async () 
     process.env.PATH = bin + ':' + priorPath
     process.env.LOCAL_CI_TEST_CAPTURE = capture
     const lines: string[] = []
+    const selected: string[] = []
+    const states: string[] = []
     const code = await new ActWorkflowRunner().run({
       workspace, repository: 'rxrise-marketplaces', ref: 'refs/heads/feat/example',
       sha, headSha: sha, baseSha, target: 'develop', runId: 'run-test',
       signal: new AbortController().signal, log: (line) => lines.push(line),
+      onWorkflows: (paths) => selected.push(...paths),
+      onWorkflowStart: (path) => states.push(`running ${path}`),
+      onWorkflowFinish: (path, exitCode) => states.push(`finished ${path} ${exitCode}`),
     })
     assert.equal(code, 0)
     const calls = readFileSync(capture, 'utf8').trim().split('\n').map((line) => JSON.parse(line) as { args: string[]; event: { pull_request: { head: { ref: string }; base: { ref: string }; merge_commit_sha: string } } })
     assert.deepEqual(calls.map((call) => call.args[call.args.indexOf('-W') + 1]), [
       '.local-ci/workflows/architecture.yml', '.local-ci/workflows/tests.yaml',
     ])
+    assert.deepEqual(selected, calls.map((call) => call.args[call.args.indexOf('-W') + 1]))
+    assert.deepEqual(states, selected.flatMap((path) => [`running ${path}`, `finished ${path} 0`]))
     assert(calls.every((call) => call.args[0] === 'pull_request'))
     assert.equal(calls[0].event.pull_request.head.ref, 'feat/example')
     assert.equal(calls[0].event.pull_request.base.ref, 'develop')

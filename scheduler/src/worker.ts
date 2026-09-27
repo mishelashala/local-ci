@@ -1,9 +1,10 @@
 import { spawn } from 'node:child_process'
 import { mkdirSync, rmSync } from 'node:fs'
 import { join } from 'node:path'
-import { appendLog, claimNextRunGlobal, finishRun, getRepository } from './db.ts'
+import { appendLog, claimNextRunGlobal, finishRun, getRepository, integrationControl, clearIntegrationControl, pendingPromotion, registerWorkflows, startWorkflow, finishWorkflow } from './db.ts'
 import { workRoot } from './paths.ts'
 import { ActWorkflowRunner, runTimeoutMs } from './workflow-runner.ts'
+import { integrate, maintainIntegrationQueue, withRepositoryLock, completeSmoke } from './integration.ts'
 
 type ClaimedRun = NonNullable<ReturnType<typeof claimNextRunGlobal>>
 const runner = new ActWorkflowRunner()
@@ -65,10 +66,13 @@ async function execute(run: ClaimedRun) {
       sha: run.candidateSha,
       headSha: run.headSha!,
       baseSha: run.baseSha!,
-      target: (run.target ?? 'develop') as 'develop' | 'main' | 'reconcile' | 'post-merge',
+      target: (run.target ?? 'develop') as 'develop' | 'main' | 'reconcile' | 'post-merge' | 'smoke',
       runId: run.id,
       signal: controller.signal,
-      log: (line) => appendLog(run.id, line),
+      log: (line, workflow) => appendLog(run.id, line, workflow),
+      onWorkflows: (paths) => registerWorkflows(run.id, paths),
+      onWorkflowStart: (path) => startWorkflow(run.id, path),
+      onWorkflowFinish: (path, code) => finishWorkflow(run.id, path, code),
     })
     status = exitCode === 0 ? 'passed' : 'failed'
   } catch (error) {
@@ -77,6 +81,16 @@ async function execute(run: ClaimedRun) {
     clearTimeout(timeout)
     if (controller.signal.aborted && !timedOut) { status = 'canceled'; exitCode = null }
     finishRun(run.id, status, exitCode)
+    if (status === 'passed' && run.target === 'develop') {
+      try { await integrate(run.id) }
+      catch (error) { appendLog(run.id, `integration deferred: ${String(error)}`) }
+    }
+    if (run.target === 'smoke') await completeSmoke(run.id, status)
+    if (status !== 'passed' && run.target === 'main') {
+      await withRepositoryLock(run.repository, () => {
+        if (integrationControl(run.repository)?.mode === 'frozen' && !pendingPromotion(run.repository)) clearIntegrationControl(run.repository)
+      })
+    }
     active.delete(run.id)
     rmSync(workDir, { recursive: true, force: true })
   }
@@ -84,13 +98,15 @@ async function execute(run: ClaimedRun) {
 
 export function startWorker() {
   let busy = false
-  const tick = () => {
+  const tick = async () => {
     if (busy) return
-    const run = claimNextRunGlobal()
-    if (!run) return
     busy = true
+    try { await maintainIntegrationQueue() }
+    catch (error) { console.error('queue maintenance failed', error) }
+    const run = claimNextRunGlobal()
+    if (!run) { busy = false; return }
     void execute(run).finally(() => { busy = false })
   }
-  setInterval(tick, 1000)
-  tick()
+  setInterval(() => void tick(), 1000)
+  void tick()
 }

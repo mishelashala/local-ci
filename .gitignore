@@ -6,5 +6,5 @@ dist
 # Local scheduler state and checkout workdirs
 scheduler/data
 
-# Bare repo created by scripts/setup-ci.sh
+# Bare repositories created when projects are connected
 ci/repos
