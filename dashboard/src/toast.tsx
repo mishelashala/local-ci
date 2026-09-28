@@ -20,7 +20,9 @@ export function ToastProvider({ children }: { children: ReactNode }) {
         open={toast !== null}
         autoHideDuration={toast?.severity === 'error' ? 8000 : 4500}
         onClose={(_event, reason) => {
-          if (reason === 'clickaway') return;
+          if (reason === 'clickaway') {
+            return;
+          }
           setToast(null);
         }}
         anchorOrigin={{ vertical: 'bottom', horizontal: 'center' }}

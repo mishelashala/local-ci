@@ -11,7 +11,9 @@ let last = '';
 while (Date.now() < deadline) {
   try {
     const response = await fetch(`${base}/api/runs?repository=${encodeURIComponent(repository)}`);
-    if (!response.ok) throw new Error(`scheduler returned ${response.status}`);
+    if (!response.ok) {
+      throw new Error(`scheduler returned ${response.status}`);
+    }
     const { runs } = await response.json();
     const run = runs.find(
       (item) =>
@@ -31,7 +33,9 @@ while (Date.now() < deadline) {
       }
       if (result.status === 'failed' || result.status === 'blocked') {
         console.error(`CI failed for ${repository}/${branch} (${run.id}):`);
-        for (const line of result.failure ?? []) console.error(line);
+        for (const line of result.failure ?? []) {
+          console.error(line);
+        }
         console.error(`logs: ${base}${result.logsUrl}`);
         process.exit(1);
       }

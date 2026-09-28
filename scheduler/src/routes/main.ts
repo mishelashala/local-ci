@@ -16,12 +16,17 @@ export function registerMainRoute(app: FastifyInstance) {
   app.post('/main', async (request, reply) => {
     const body = request.body as { repository?: unknown } | null;
     const repository = repositoryFor(body?.repository) ?? listRepositories()[0];
-    if (!repository) return reply.code(404).send({ error: 'repository not found' });
+    if (!repository) {
+      return reply.code(404).send({ error: 'repository not found' });
+    }
     return withRepositoryLock(repository.id, async () => {
-      if (integrationControl(repository.id))
+      if (integrationControl(repository.id)) {
         return reply.code(409).send({ error: 'promotion or recovery is already active' });
+      }
       const frozenSha = readDevelopSha(repository.barePath);
-      if (!frozenSha) return reply.code(409).send({ error: 'develop is missing' });
+      if (!frozenSha) {
+        return reply.code(409).send({ error: 'develop is missing' });
+      }
       setIntegrationControl(repository.id, 'frozen', frozenSha, 'Validating develop for promotion');
       const repoPath = repository.barePath;
       try {

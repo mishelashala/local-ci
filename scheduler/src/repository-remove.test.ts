@@ -29,9 +29,12 @@ test('delete removes a repository from the list and disk', { timeout: 20_000 }, 
         await fetch(`${base}/api/health`)
           .then((response) => response.ok)
           .catch(() => false)
-      )
+      ) {
         break;
-      if (n === 49) assert.fail('server did not start');
+      }
+      if (n === 49) {
+        assert.fail('server did not start');
+      }
       await new Promise((resolve) => setTimeout(resolve, 100));
     }
     const listed = (await (await fetch(`${base}/api/repositories`)).json()) as { repositories: { id: string }[] };

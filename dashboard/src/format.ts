@@ -13,9 +13,13 @@ export function formatClock(ms: number): string {
 
 export function formatAgo(now: number, then: number): string {
   const seconds = Math.max(0, Math.floor((now - then) / 1000));
-  if (seconds < 60) return `${seconds}s ago`;
+  if (seconds < 60) {
+    return `${seconds}s ago`;
+  }
   const minutes = Math.floor(seconds / 60);
-  if (minutes < 60) return `${minutes}m ago`;
+  if (minutes < 60) {
+    return `${minutes}m ago`;
+  }
   const hours = Math.floor(minutes / 60);
   return `${hours}h ago`;
 }
@@ -28,12 +32,16 @@ export function formatDuration(ms: number): string {
     const hours = Math.floor(minutes / 60);
     return `${hours}h ${minutes % 60}m`;
   }
-  if (minutes === 0) return `${seconds}s`;
+  if (minutes === 0) {
+    return `${seconds}s`;
+  }
   return `${minutes}m ${seconds.toString().padStart(2, '0')}s`;
 }
 
 export function runDuration(run: Run, now: number): string {
-  if (!run.startedAt) return 'queued';
+  if (!run.startedAt) {
+    return 'queued';
+  }
   return formatDuration((run.finishedAt ?? now) - run.startedAt);
 }
 
@@ -87,6 +95,8 @@ export function makeSha(seed: number): string {
 
 export function splitLog(line: string): [string, string] {
   const index = line.indexOf('|');
-  if (index === -1) return ['log', line];
+  if (index === -1) {
+    return ['log', line];
+  }
   return [line.slice(0, index), line.slice(index + 1)];
 }

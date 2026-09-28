@@ -9,7 +9,9 @@ export function registerReconcileRoute(app: FastifyInstance) {
   app.post('/reconcile', async (request, reply) => {
     const body = request.body as { repository?: unknown } | null;
     const repository = repositoryFor(body?.repository);
-    if (!repository) return reply.code(404).send({ error: 'repository not found' });
+    if (!repository) {
+      return reply.code(404).send({ error: 'repository not found' });
+    }
     const path = repository.barePath;
     try {
       await synchronizeDevelop(path, true);
@@ -17,16 +19,18 @@ export function registerReconcileRoute(app: FastifyInstance) {
       return reply.code(502).send({ error: `GitHub synchronization failed: ${String(error)}` });
     }
     const sync = branchSync(path, 'develop');
-    if (sync.relation !== 'diverged' || !sync.local || !sync.github)
+    if (sync.relation !== 'diverged' || !sync.local || !sync.github) {
       return reply.code(409).send({ error: 'develop is not diverged' });
+    }
     const merged = await createTemporaryMerge({
       bareRepo: path,
       baseSha: sync.github,
       headSha: sync.local,
       message: 'Merge GitHub develop into local develop',
     });
-    if ('conflict' in merged)
+    if ('conflict' in merged) {
       return reply.code(409).send({ error: 'reconciliation has merge conflicts; resolve in your working copy' });
+    }
     retainCandidate(path, merged.sha);
     const run = recordCandidate({
       repository: repository.id,

@@ -7,12 +7,16 @@ export function registerManualRunRoute(app: FastifyInstance) {
     const body = request.body as { repository?: unknown; branch?: unknown } | null;
     const repository = repositoryFor(body?.repository);
     const branch = body?.branch;
-    if (!repository) return reply.code(404).send({ error: 'repository not found' });
+    if (!repository) {
+      return reply.code(404).send({ error: 'repository not found' });
+    }
     if (typeof branch !== 'string' || !REF.test(`refs/heads/${branch}`) || branch === 'main' || branch === 'develop') {
       return reply.code(400).send({ error: 'choose a feature branch' });
     }
     const sha = readBranchSha(repository.barePath, branch);
-    if (!sha) return reply.code(404).send({ error: 'branch not found' });
+    if (!sha) {
+      return reply.code(404).send({ error: 'branch not found' });
+    }
     const response = await app.inject({
       method: 'POST',
       url: '/events',

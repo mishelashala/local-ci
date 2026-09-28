@@ -42,14 +42,20 @@ export async function withRepositoryLock<T>(repository: string, operation: () =>
     return await operation();
   } finally {
     release();
-    if (tails.get(repository) === tail) tails.delete(repository);
+    if (tails.get(repository) === tail) {
+      tails.delete(repository);
+    }
   }
 }
 
 function dropMergedBranch(bareRepo: string, branch: string, expectedSha: string, logId: string) {
   const result = deleteBranchIfMatches(bareRepo, branch, expectedSha);
-  if (result === 'deleted') appendLog(logId, `Deleted branch ${branch} after it landed on develop.`);
-  if (result === 'moved') appendLog(logId, `Branch ${branch} moved after the merge; left it in place.`);
+  if (result === 'deleted') {
+    appendLog(logId, `Deleted branch ${branch} after it landed on develop.`);
+  }
+  if (result === 'moved') {
+    appendLog(logId, `Branch ${branch} moved after the merge; left it in place.`);
+  }
 }
 
 function isAncestor(repo: string, head: string, base: string) {
@@ -63,9 +69,13 @@ function isAncestor(repo: string, head: string, base: string) {
 
 async function rebuild(id: string): Promise<void> {
   const run = getRun(id);
-  if (run?.target !== 'develop' || !['queued', 'stale', 'passed'].includes(run.status) || run.integratedAt) return;
+  if (run?.target !== 'develop' || !['queued', 'stale', 'passed'].includes(run.status) || run.integratedAt) {
+    return;
+  }
   const repository = getRepository(run.repository);
-  if (!repository || integrationControl(run.repository)) return;
+  if (!repository || integrationControl(run.repository)) {
+    return;
+  }
   const base = readDevelopSha(repository.barePath);
   const head = readBranchSha(repository.barePath, run.branch);
   if (!base || !head) {
@@ -77,7 +87,9 @@ async function rebuild(id: string): Promise<void> {
     return;
   }
   if (run.baseSha === base) {
-    if (run.status === 'stale') retireCandidate(id, 'Stale run cannot be reused; push or enqueue the branch again.');
+    if (run.status === 'stale') {
+      retireCandidate(id, 'Stale run cannot be reused; push or enqueue the branch again.');
+    }
     return;
   }
   markRunStale(id);
@@ -125,12 +137,15 @@ async function rebuild(id: string): Promise<void> {
 
 export async function integrate(id: string): Promise<void> {
   const initial = getRun(id);
-  if (initial?.target !== 'develop') return;
+  if (initial?.target !== 'develop') {
+    return;
+  }
   await withRepositoryLock(initial.repository, async () => {
     const run = getRun(id);
     const repository = getRepository(initial.repository);
-    if (!run || !repository || run.status !== 'passed' || run.integratedAt || integrationControl(run.repository))
+    if (!run || !repository || run.status !== 'passed' || run.integratedAt || integrationControl(run.repository)) {
       return;
+    }
     const base = readDevelopSha(repository.barePath);
     const head = readBranchSha(repository.barePath, run.branch);
     if (!base || !head || head !== run.headSha || !run.candidateSha || !run.baseSha) {
@@ -165,12 +180,16 @@ export async function integrate(id: string): Promise<void> {
       await rebuild(id);
       return;
     }
-    if (smokeConfigured) setIntegrationControl(run.repository, 'frozen', run.candidateSha, 'Post-merge smoke check');
+    if (smokeConfigured) {
+      setIntegrationControl(run.repository, 'frozen', run.candidateSha, 'Post-merge smoke check');
+    }
     markIntegrated(id);
     appendLog(id, `Automatically integrated ${run.candidateSha} into local develop.`);
-    if (!smokeConfigured && run.headSha) dropMergedBranch(repository.barePath, run.branch, run.headSha, id);
+    if (!smokeConfigured && run.headSha) {
+      dropMergedBranch(repository.barePath, run.branch, run.headSha, id);
+    }
     clearRepoCache();
-    if (smokeConfigured)
+    if (smokeConfigured) {
       try {
         recordCandidate({
           repository: run.repository,
@@ -192,16 +211,21 @@ export async function integrate(id: string): Promise<void> {
           `Could not enqueue smoke check: ${String(error)}`,
         );
       }
+    }
   });
 }
 
 export async function completeSmoke(id: string, status: 'passed' | 'failed' | 'canceled') {
   const run = getRun(id);
-  if (run?.target !== 'smoke') return;
+  if (run?.target !== 'smoke') {
+    return;
+  }
   await withRepositoryLock(run.repository, () => {
     const control = integrationControl(run.repository);
     const repository = getRepository(run.repository);
-    if (!repository || control?.developSha !== run.candidateSha || control.mode !== 'frozen') return;
+    if (!repository || control?.developSha !== run.candidateSha || control.mode !== 'frozen') {
+      return;
+    }
     if (status === 'passed') {
       appendLog(id, `Healthy develop ${run.candidateSha}; integration resumes.`);
       const source = listRunsForRepository(run.repository).find(
@@ -213,12 +237,16 @@ export async function completeSmoke(id: string, status: 'passed' | 'failed' | 'c
           item.branch !== 'develop' &&
           item.branch !== 'main',
       );
-      if (source?.headSha) dropMergedBranch(repository.barePath, source.branch, source.headSha, id);
+      if (source?.headSha) {
+        dropMergedBranch(repository.barePath, source.branch, source.headSha, id);
+      }
       clearRepoCache();
       clearIntegrationControl(run.repository);
       return;
     }
-    if (!run.baseSha || !run.candidateSha) return;
+    if (!run.baseSha || !run.candidateSha) {
+      return;
+    }
     try {
       compareAndSwapDevelop(repository.barePath, run.baseSha, run.candidateSha);
       markDefective(run.repository, run.candidateSha);
@@ -260,7 +288,9 @@ export async function maintainIntegrationQueue(): Promise<void> {
   for (const { id } of staleOrQueuedCandidates()) {
     const run = getRun(id);
     const repository = run && getRepository(run.repository);
-    if (!run || !repository) continue;
+    if (!run || !repository) {
+      continue;
+    }
     if (run.status === 'stale' || readDevelopSha(repository.barePath) !== run.baseSha) {
       await withRepositoryLock(run.repository, () => rebuild(id));
       return;

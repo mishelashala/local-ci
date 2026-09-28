@@ -9,9 +9,13 @@ import { REPOSITORY_ID } from './context.ts';
 
 export function registerDeleteRepositoryRoute(app: FastifyInstance) {
   app.delete<{ Params: { id: string } }>('/repositories/:id', async (request, reply) => {
-    if (!REPOSITORY_ID.test(request.params.id)) return reply.code(400).send({ error: 'repository not found' });
+    if (!REPOSITORY_ID.test(request.params.id)) {
+      return reply.code(400).send({ error: 'repository not found' });
+    }
     const repository = getRepository(request.params.id);
-    if (!repository) return reply.code(404).send({ error: 'repository not found' });
+    if (!repository) {
+      return reply.code(404).send({ error: 'repository not found' });
+    }
     for (const run of activeRunIds(repository.id)) {
       cancelQueuedRun(run.id);
       cancelActiveRun(run.id);
@@ -25,7 +29,9 @@ export function registerDeleteRepositoryRoute(app: FastifyInstance) {
         return reply.code(409).send({ error: `Could not delete the local repository: ${message}` });
       }
     }
-    if (!deleteRepository(repository.id)) return reply.code(404).send({ error: 'repository not found' });
+    if (!deleteRepository(repository.id)) {
+      return reply.code(404).send({ error: 'repository not found' });
+    }
     clearRepoCache();
     return { removed: repository.id };
   });

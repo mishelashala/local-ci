@@ -27,12 +27,16 @@ test('API runs YAML, integrates agents, freezes promotion, pushes and resets exa
       headers: { 'content-type': 'application/json' },
       body: JSON.stringify(body),
     });
-    if (!response.ok) assert.fail(`${path}: ${response.status} ${await response.text()}`);
+    if (!response.ok) {
+      assert.fail(`${path}: ${response.status} ${await response.text()}`);
+    }
     return response.json();
   };
   const wait = async (predicate: () => Promise<boolean>) => {
     for (let n = 0; n < 120; n++) {
-      if (await predicate()) return;
+      if (await predicate()) {
+        return;
+      }
       await new Promise((resolve) => setTimeout(resolve, 200));
     }
     assert.fail('server flow timed out');

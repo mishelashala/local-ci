@@ -21,29 +21,41 @@ export function registerPushesRoute(app: FastifyInstance) {
       return reply.code(400).send({ error: 'branch must be develop or main' });
     }
     const repository = repositoryFor(body.repository) ?? listRepositories()[0];
-    if (!repository) return reply.code(404).send({ error: 'repository not found' });
+    if (!repository) {
+      return reply.code(404).send({ error: 'repository not found' });
+    }
     return withRepositoryLock(repository.id, async () => {
       const repoPath = repository.barePath;
       const origin = readOrigin(repoPath);
-      if (!origin) return reply.code(409).send({ error: ORIGIN_HELP });
+      if (!origin) {
+        return reply.code(409).send({ error: ORIGIN_HELP });
+      }
 
       const control = integrationControl(repository.id);
-      if (body.branch === 'develop' && control)
+      if (body.branch === 'develop' && control) {
         return reply.code(409).send({ error: 'promotion is active; staging push is paused' });
-      if (body.branch === 'main' && control?.mode !== 'frozen')
+      }
+      if (body.branch === 'main' && control?.mode !== 'frozen') {
         return reply.code(409).send({ error: 'validate a frozen promotion first' });
+      }
       const stagingSha = body.branch === 'develop' ? readDevelopSha(repoPath) : null;
-      if (stagingSha) setIntegrationControl(repository.id, 'frozen', stagingSha, 'Sending tested develop to staging');
+      if (stagingSha) {
+        setIntegrationControl(repository.id, 'frozen', stagingSha, 'Sending tested develop to staging');
+      }
 
       try {
         const develop = await synchronizeDevelop(repoPath, true);
         const main = await synchronizeBranch(repoPath, 'main');
         if (develop.relation === 'diverged' || main.relation === 'diverged') {
-          if (stagingSha) clearIntegrationControl(repository.id);
+          if (stagingSha) {
+            clearIntegrationControl(repository.id);
+          }
           return reply.code(409).send({ error: 'GitHub branch diverged; reconcile before pushing' });
         }
       } catch (error) {
-        if (stagingSha) clearIntegrationControl(repository.id);
+        if (stagingSha) {
+          clearIntegrationControl(repository.id);
+        }
         return reply.code(502).send({ error: `GitHub synchronization failed: ${String(error)}` });
       }
 
@@ -67,18 +79,23 @@ export function registerPushesRoute(app: FastifyInstance) {
 
       const mainSha = readBranchSha(repoPath, 'main');
       const developSha = readDevelopSha(repoPath);
-      if (pendingPromotion(repository.id))
+      if (pendingPromotion(repository.id)) {
         return reply.code(409).send({ error: 'finish or release the previous promotion first' });
-      if (control?.developSha !== developSha)
+      }
+      if (control?.developSha !== developSha) {
         return reply.code(409).send({ error: 'frozen develop changed; cancel and validate again' });
+      }
       if (!mainSha || !developSha) {
         return reply.code(409).send({ error: 'main or develop is missing. Connect the repository in the dashboard.' });
       }
       const candidate = findPassedMain(repository.id, mainSha, developSha);
-      if (!candidate)
+      if (!candidate) {
         return reply.code(409).send({ error: 'develop → main has not passed against the current branches' });
+      }
       const pushed = await pushRef(repoPath, candidate, 'refs/heads/main');
-      if ('error' in pushed) return reply.code(502).send({ error: pushed.error });
+      if ('error' in pushed) {
+        return reply.code(502).send({ error: pushed.error });
+      }
       if (candidate !== mainSha) {
         try {
           compareAndSwapRef(repoPath, 'refs/heads/main', candidate, mainSha);

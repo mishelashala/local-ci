@@ -215,8 +215,11 @@ test('feature push uses local PR workflows and the exact merge event', async () 
     assert(lines.some((line) => line.includes('workflows: .local-ci/workflows/architecture.yml')));
   } finally {
     process.env.PATH = priorPath;
-    if (priorCapture === undefined) delete process.env.LOCAL_CI_TEST_CAPTURE;
-    else process.env.LOCAL_CI_TEST_CAPTURE = priorCapture;
+    if (priorCapture === undefined) {
+      delete process.env.LOCAL_CI_TEST_CAPTURE;
+    } else {
+      process.env.LOCAL_CI_TEST_CAPTURE = priorCapture;
+    }
     rmSync(root, { recursive: true, force: true });
   }
 });

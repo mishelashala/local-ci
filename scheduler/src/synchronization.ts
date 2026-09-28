@@ -36,18 +36,32 @@ function ancestor(path: string, older: string, newer: string): boolean {
 export function branchSync(path: string, branch: 'main' | 'develop'): BranchSync {
   const local = readBranchSha(path, branch);
   const github = trackingSha(path, branch);
-  if (!github) return { local, github, relation: 'github-missing' };
-  if (!local) return { local, github, relation: 'local-missing' };
-  if (local === github) return { local, github, relation: 'same' };
-  if (ancestor(path, local, github)) return { local, github, relation: 'github-ahead' };
-  if (ancestor(path, github, local)) return { local, github, relation: 'local-ahead' };
+  if (!github) {
+    return { local, github, relation: 'github-missing' };
+  }
+  if (!local) {
+    return { local, github, relation: 'local-missing' };
+  }
+  if (local === github) {
+    return { local, github, relation: 'same' };
+  }
+  if (ancestor(path, local, github)) {
+    return { local, github, relation: 'github-ahead' };
+  }
+  if (ancestor(path, github, local)) {
+    return { local, github, relation: 'local-ahead' };
+  }
   return { local, github, relation: 'diverged' };
 }
 
 export async function fetchGitHub(path: string, force = false): Promise<void> {
   const pending = fetches.get(path);
-  if (pending) return pending;
-  if (!force && Date.now() - (lastFetch.get(path) ?? 0) < 30000) return;
+  if (pending) {
+    return pending;
+  }
+  if (!force && Date.now() - (lastFetch.get(path) ?? 0) < 30000) {
+    return;
+  }
   const task = (async () => {
     try {
       await execFileAsync(
@@ -88,8 +102,12 @@ export async function synchronizeDevelop(path: string, force = false) {
 export async function matchLocalDevelop(path: string): Promise<BranchSync> {
   await fetchGitHub(path, true);
   const state = branchSync(path, 'develop');
-  if (!state.github || !state.local || state.local === state.github) return state;
-  if (state.relation !== 'diverged' && state.relation !== 'github-ahead') return state;
+  if (!state.github || !state.local || state.local === state.github) {
+    return state;
+  }
+  if (state.relation !== 'diverged' && state.relation !== 'github-ahead') {
+    return state;
+  }
   retainCandidate(path, state.local);
   compareAndSwapDevelop(path, state.github, state.local);
   clearRepoCache();
@@ -98,7 +116,9 @@ export async function matchLocalDevelop(path: string): Promise<BranchSync> {
 
 export function assertRemoteUnchanged(path: string, branch: 'main' | 'develop', expected: string | null) {
   const current = branchSync(path, branch).github;
-  if (current !== expected) throw new Error(`GitHub ${branch} changed; synchronize and revalidate`);
+  if (current !== expected) {
+    throw new Error(`GitHub ${branch} changed; synchronize and revalidate`);
+  }
 }
 
 export function remoteSha(path: string, branch: 'main' | 'develop') {

@@ -39,7 +39,9 @@ export interface WorkflowRunner {
  *  linux/arm64 binary, so that is the default on an arm64 Mac too. */
 export function containerArchitecture(configured = process.env.LOCAL_CI_CONTAINER_ARCH): string {
   const chosen = configured?.trim();
-  if (chosen) return chosen;
+  if (chosen) {
+    return chosen;
+  }
   return 'linux/amd64';
 }
 
@@ -52,7 +54,9 @@ const GH_SHA256 = {
 } as const;
 
 function quoteArg(value: string): string {
-  if (/^[A-Za-z0-9_@%+=:,./-]+$/.test(value)) return value;
+  if (/^[A-Za-z0-9_@%+=:,./-]+$/.test(value)) {
+    return value;
+  }
   return `'${value.replaceAll("'", `'\\''`)}'`;
 }
 
@@ -64,12 +68,16 @@ export function ghContainerOption(binary: string): string {
 export function actEnvContents(pathValue: string, token: string | null, projectEnv = ''): string {
   const kept = projectEnv.split('\n').filter((line) => {
     const trimmed = line.trim();
-    if (!trimmed || trimmed.startsWith('#')) return Boolean(trimmed);
+    if (!trimmed || trimmed.startsWith('#')) {
+      return Boolean(trimmed);
+    }
     const key = trimmed.split('=', 1)[0];
     return key !== 'PATH' && key !== 'GH_TOKEN' && key !== 'GITHUB_TOKEN';
   });
   const lines = [...kept, `PATH=${pathValue}`];
-  if (token) lines.push(`GH_TOKEN=${token}`, `GITHUB_TOKEN=${token}`);
+  if (token) {
+    lines.push(`GH_TOKEN=${token}`, `GITHUB_TOKEN=${token}`);
+  }
   return `${lines.join('\n')}\n`;
 }
 
@@ -81,7 +89,9 @@ function hostGhToken(): string | null {
   delete env.GITHUB_TOKEN;
   try {
     const token = execFileSync('gh', ['auth', 'token'], { encoding: 'utf8', env }).trim();
-    if (token) return token;
+    if (token) {
+      return token;
+    }
   } catch {
     /* host gh is missing or logged out */
   }
@@ -90,14 +100,20 @@ function hostGhToken(): string | null {
 
 export async function ensureLinuxGh(toolsDir: string, arch: keyof typeof GH_SHA256): Promise<string> {
   const dest = join(toolsDir, `gh-${GH_VERSION}-linux-${arch}`);
-  if (existsSync(dest)) return dest;
+  if (existsSync(dest)) {
+    return dest;
+  }
   mkdirSync(toolsDir, { recursive: true });
   const name = `gh_${GH_VERSION}_linux_${arch}.tar.gz`;
   const response = await fetch(`https://github.com/cli/cli/releases/download/v${GH_VERSION}/${name}`);
-  if (!response.ok) throw new Error(`download gh failed (${response.status})`);
+  if (!response.ok) {
+    throw new Error(`download gh failed (${response.status})`);
+  }
   const bytes = Buffer.from(await response.arrayBuffer());
   const digest = createHash('sha256').update(bytes).digest('hex');
-  if (digest !== GH_SHA256[arch]) throw new Error('gh checksum mismatch');
+  if (digest !== GH_SHA256[arch]) {
+    throw new Error('gh checksum mismatch');
+  }
   const extractDir = join(toolsDir, `gh-extract-${arch}`);
   const archive = join(toolsDir, `${name}.partial`);
   writeFileSync(archive, bytes);
@@ -106,27 +122,39 @@ export async function ensureLinuxGh(toolsDir: string, arch: keyof typeof GH_SHA2
   try {
     execFileSync('tar', ['-xzf', archive, '-C', extractDir]);
     const extracted = join(extractDir, `gh_${GH_VERSION}_linux_${arch}`, 'bin', 'gh');
-    if (!existsSync(extracted)) throw new Error('gh archive did not contain bin/gh');
+    if (!existsSync(extracted)) {
+      throw new Error('gh archive did not contain bin/gh');
+    }
     const staging = `${dest}.partial`;
     renameSync(extracted, staging);
     chmodSync(staging, 0o755);
-    if (!existsSync(dest)) renameSync(staging, dest);
+    if (!existsSync(dest)) {
+      renameSync(staging, dest);
+    }
   } finally {
     rmSync(extractDir, { recursive: true, force: true });
     rmSync(archive, { force: true });
     rmSync(`${dest}.partial`, { force: true });
   }
-  if (!existsSync(dest)) throw new Error('gh binary was not installed');
+  if (!existsSync(dest)) {
+    throw new Error('gh binary was not installed');
+  }
   return dest;
 }
 
 export function actContainerPath(imagePath = ''): string {
   const bins = new Set<string>();
   for (const entry of imagePath.split(':')) {
-    if (!entry.includes('/node/') || !entry.endsWith('/bin')) continue;
+    if (!entry.includes('/node/') || !entry.endsWith('/bin')) {
+      continue;
+    }
     bins.add(entry);
-    if (entry.includes('/arm64/')) bins.add(entry.replace('/arm64/', '/x64/'));
-    if (entry.includes('/x64/')) bins.add(entry.replace('/x64/', '/arm64/'));
+    if (entry.includes('/arm64/')) {
+      bins.add(entry.replace('/arm64/', '/x64/'));
+    }
+    if (entry.includes('/x64/')) {
+      bins.add(entry.replace('/x64/', '/arm64/'));
+    }
   }
   if (bins.size === 0) {
     bins.add('/opt/acttoolcache/node/24.19.0/x64/bin');
@@ -147,17 +175,27 @@ function streamLines(stream: NodeJS.ReadableStream | null, log: (line: string) =
     pending += chunk;
     const lines = pending.split(/\r\n|\r|\n/);
     pending = lines.pop() ?? '';
-    for (const line of lines) if (line) log(line);
+    for (const line of lines) {
+      if (line) {
+        log(line);
+      }
+    }
   });
   return () => {
-    if (pending) log(pending);
+    if (pending) {
+      log(pending);
+    }
   };
 }
 
 function collectHostPorts(node: unknown, ports: number[]) {
-  if (!node || typeof node !== 'object') return;
+  if (!node || typeof node !== 'object') {
+    return;
+  }
   if (Array.isArray(node)) {
-    for (const item of node) collectHostPorts(item, ports);
+    for (const item of node) {
+      collectHostPorts(item, ports);
+    }
     return;
   }
   const record = node as Record<string, unknown>;
@@ -166,14 +204,20 @@ function collectHostPorts(node: unknown, ports: number[]) {
       if (typeof entry === 'string') {
         const match = entry.trim().match(/^(\d{1,5}):\d{1,5}(?:\/(?:tcp|udp))?$/);
         const port = match ? Number(match[1]) : 0;
-        if (port > 0 && port < 65536) ports.push(port);
+        if (port > 0 && port < 65536) {
+          ports.push(port);
+        }
       } else if (entry && typeof entry === 'object' && 'published' in entry) {
         const port = Number((entry as { published?: unknown }).published);
-        if (Number.isInteger(port) && port > 0 && port < 65536) ports.push(port);
+        if (Number.isInteger(port) && port > 0 && port < 65536) {
+          ports.push(port);
+        }
       }
     }
   }
-  for (const value of Object.values(record)) collectHostPorts(value, ports);
+  for (const value of Object.values(record)) {
+    collectHostPorts(value, ports);
+  }
 }
 
 function hostPortsIn(node: unknown): number[] {
@@ -206,11 +250,15 @@ function jobBodies(source: string): { start: number; end: number; ports: number[
     return [];
   }
   const jobs = document.get('jobs', true);
-  if (!YAML.isMap(jobs)) return [];
+  if (!YAML.isMap(jobs)) {
+    return [];
+  }
   const bodies: { start: number; end: number; ports: number[] }[] = [];
   for (const item of jobs.items) {
     const value = item.value;
-    if (!value || !YAML.isNode(value) || !value.range) continue;
+    if (!value || !YAML.isNode(value) || !value.range) {
+      continue;
+    }
     bodies.push({
       start: value.range[0],
       end: value.range[2] ?? value.range[1],
@@ -255,7 +303,9 @@ export function remapHostPorts(
     let text = source;
     for (const port of [...reserved]) {
       const replacement = allocateHostPort(port, busy, nextPort, reserved, assigned);
-      if (replacement === 0 || replacement === port) continue;
+      if (replacement === 0 || replacement === port) {
+        continue;
+      }
       changes.push({ from: port, to: replacement });
       text = replaceHostPort(text, port, replacement);
     }
@@ -266,15 +316,21 @@ export function remapHostPorts(
     let text = source.slice(body.start, body.end);
     for (const port of body.ports) {
       const replacement = allocateHostPort(port, busy, nextPort, reserved, assigned);
-      if (replacement === 0 || replacement === port) continue;
+      if (replacement === 0 || replacement === port) {
+        continue;
+      }
       changes.push({ from: port, to: replacement });
       text = replaceHostPort(text, port, replacement);
     }
-    if (text !== source.slice(body.start, body.end)) edits.push({ start: body.start, end: body.end, text });
+    if (text !== source.slice(body.start, body.end)) {
+      edits.push({ start: body.start, end: body.end, text });
+    }
   }
   edits.sort((left, right) => right.start - left.start);
   let text = source;
-  for (const edit of edits) text = text.slice(0, edit.start) + edit.text + text.slice(edit.end);
+  for (const edit of edits) {
+    text = text.slice(0, edit.start) + edit.text + text.slice(edit.end);
+  }
   return { text, changes };
 }
 
@@ -285,8 +341,11 @@ function freshPortCount(source: string, busy: (port: number) => boolean): number
   let count = 0;
   for (const ports of groups) {
     for (const port of ports) {
-      if (!busy(port) && !assigned.has(port)) assigned.add(port);
-      else count++;
+      if (!busy(port) && !assigned.has(port)) {
+        assigned.add(port);
+      } else {
+        count++;
+      }
     }
   }
   return count;
@@ -303,7 +362,9 @@ function canListen(port: number, host: string): Promise<boolean> {
 }
 
 async function portBusy(port: number): Promise<boolean> {
-  if (!(await canListen(port, '0.0.0.0'))) return true;
+  if (!(await canListen(port, '0.0.0.0'))) {
+    return true;
+  }
   return !(await canListen(port, '::'));
 }
 
@@ -345,7 +406,11 @@ function actImagePath(): string {
 async function remapBusyHostPorts(source: string) {
   const ports = hostPorts(source);
   const busy = new Set<number>();
-  for (const port of ports) if (await portBusy(port)) busy.add(port);
+  for (const port of ports) {
+    if (await portBusy(port)) {
+      busy.add(port);
+    }
+  }
   const needed = freshPortCount(source, (port) => busy.has(port));
   const free: number[] = [];
   for (let index = 0; index < Math.max(needed, 1) * 5 && free.length < needed; index++) {
@@ -356,8 +421,9 @@ async function remapBusyHostPorts(source: string) {
       !busy.has(candidate) &&
       !free.includes(candidate) &&
       !(await portBusy(candidate))
-    )
+    ) {
       free.push(candidate);
+    }
   }
   let index = 0;
   return remapHostPorts(
@@ -394,8 +460,9 @@ function matches(patterns: string[] | undefined, value: string) {
 function selectedWorkflows(input: Parameters<WorkflowRunner['run']>[0]) {
   if (input.target === 'smoke') {
     const file = '.local-ci/workflows/develop-smoke.yml';
-    if (!existsSync(join(input.workspace, file)))
+    if (!existsSync(join(input.workspace, file))) {
       throw new Error('post-merge smoke workflow disappeared from the tested commit');
+    }
     const workflow = YAML.parse(readFileSync(join(input.workspace, file), 'utf8')) as {
       on?: { push?: { branches?: string[] } };
     };
@@ -408,12 +475,15 @@ function selectedWorkflows(input: Parameters<WorkflowRunner['run']>[0]) {
     ? '.local-ci/workflows'
     : '.github/workflows';
   const directory = join(input.workspace, relative);
-  if (!existsSync(directory))
+  if (!existsSync(directory)) {
     throw new Error('no .local-ci/workflows or .github/workflows directory at the candidate SHA');
+  }
   const files = readdirSync(directory)
     .filter((name) => /\.ya?ml$/.test(name))
     .sort();
-  if (files.length === 0) throw new Error('no workflow YAML files at the candidate SHA');
+  if (files.length === 0) {
+    throw new Error('no workflow YAML files at the candidate SHA');
+  }
   const base = input.target === 'main' ? 'main' : 'develop';
   const changes = execFileSync('git', ['diff', '--name-only', `${input.baseSha}...${input.headSha}`], {
     cwd: input.workspace,
@@ -429,19 +499,31 @@ function selectedWorkflows(input: Parameters<WorkflowRunner['run']>[0]) {
       on?: { pull_request?: PullRequestTrigger | null };
     } | null;
     const trigger = workflow?.on?.pull_request;
-    if (trigger === undefined) return false;
-    const rules = trigger ?? {};
-    if (rules.types && !rules.types.some((type) => type === 'opened' || type === 'synchronize')) return false;
-    prWorkflows++;
-    if (rules.branches && !matches(rules.branches, base)) return false;
-    if (matches(rules['branches-ignore'], base)) return false;
-    if (rules.paths && !changes.some((path) => matches(rules.paths, path))) return false;
-    if (rules['paths-ignore'] && changes.length > 0 && changes.every((path) => matches(rules['paths-ignore'], path)))
+    if (trigger === undefined) {
       return false;
+    }
+    const rules = trigger ?? {};
+    if (rules.types && !rules.types.some((type) => type === 'opened' || type === 'synchronize')) {
+      return false;
+    }
+    prWorkflows++;
+    if (rules.branches && !matches(rules.branches, base)) {
+      return false;
+    }
+    if (matches(rules['branches-ignore'], base)) {
+      return false;
+    }
+    if (rules.paths && !changes.some((path) => matches(rules.paths, path))) {
+      return false;
+    }
+    if (rules['paths-ignore'] && changes.length > 0 && changes.every((path) => matches(rules['paths-ignore'], path))) {
+      return false;
+    }
     return true;
   });
-  if (prWorkflows === 0)
+  if (prWorkflows === 0) {
     throw new Error('no pull_request test workflow found (closed/reset workflows do not validate a push)');
+  }
   return selected.map((name) => `${relative}/${name}`);
 }
 
@@ -509,7 +591,9 @@ export class ActWorkflowRunner implements WorkflowRunner {
         const arch = containerArchitecture().endsWith('arm64') ? 'arm64' : 'amd64';
         ghBinary = await ensureLinuxGh(join(dirname(dirname(input.workspace)), 'tools'), arch);
         const token = hostGhToken();
-        if (!token) input.log('warning: gh has no token on this machine; steps that call gh cannot authenticate');
+        if (!token) {
+          input.log('warning: gh has no token on this machine; steps that call gh cannot authenticate');
+        }
         envFile = join(tmpdir(), `local-ci-${input.runId}.env`);
         const projectEnv = join(input.workspace, '.env');
         writeFileSync(
@@ -525,14 +609,19 @@ export class ActWorkflowRunner implements WorkflowRunner {
     let result = 0;
     try {
       for (const file of selected) {
-        if (input.signal.aborted) return 1;
+        if (input.signal.aborted) {
+          return 1;
+        }
         input.onWorkflowStart?.(file);
         const workflowPath = join(input.workspace, file);
         const original = readFileSync(workflowPath, 'utf8');
         const remapped = await remapBusyHostPorts(original);
-        if (remapped.text !== original) writeFileSync(workflowPath, remapped.text);
-        for (const change of remapped.changes)
+        if (remapped.text !== original) {
+          writeFileSync(workflowPath, remapped.text);
+        }
+        for (const change of remapped.changes) {
           input.log(`host port ${change.from} is in use; using ${change.to}`, file);
+        }
         const artifactPort = await ephemeralPort();
         const args = [
           input.target === 'smoke' ? 'push' : 'pull_request',
@@ -571,10 +660,14 @@ export class ActWorkflowRunner implements WorkflowRunner {
           const flushErr = streamLines(child.stderr, workflowLog);
           const abort = () => stopProcess(child);
           input.signal.addEventListener('abort', abort, { once: true });
-          if (input.signal.aborted) abort();
+          if (input.signal.aborted) {
+            abort();
+          }
           let settled = false;
           const done = (exit: number) => {
-            if (settled) return;
+            if (settled) {
+              return;
+            }
             settled = true;
             input.signal.removeEventListener('abort', abort);
             flushOut();
@@ -590,12 +683,16 @@ export class ActWorkflowRunner implements WorkflowRunner {
           child.on('close', (exit) => done(exit ?? 1));
         });
         input.onWorkflowFinish?.(file, code);
-        if (code !== 0) result = code;
+        if (code !== 0) {
+          result = code;
+        }
       }
       input.log(`Artifacts (if any): ${artifacts}`);
       return result;
     } finally {
-      if (envFile) rmSync(envFile, { force: true });
+      if (envFile) {
+        rmSync(envFile, { force: true });
+      }
     }
   }
 }

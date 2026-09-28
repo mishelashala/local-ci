@@ -68,11 +68,17 @@ const snapshotInflight = new Map<string, Promise<RepoSnapshot>>();
 const snapshotCache = new Map<string, { at: number; value: RepoSnapshot }>();
 
 export function currentRepoSnapshot(bareRepo: string, id: string, name = id, counts = true): Promise<RepoSnapshot> {
-  if (!counts) return readRepoSnapshotFast(bareRepo, id, name, false);
+  if (!counts) {
+    return readRepoSnapshotFast(bareRepo, id, name, false);
+  }
   const cached = snapshotCache.get(bareRepo);
-  if (cached && Date.now() - cached.at < 1000) return Promise.resolve(cached.value);
+  if (cached && Date.now() - cached.at < 1000) {
+    return Promise.resolve(cached.value);
+  }
   const inflight = snapshotInflight.get(bareRepo);
-  if (inflight) return inflight;
+  if (inflight) {
+    return inflight;
+  }
   const next = readRepoSnapshotFast(bareRepo, id, name, true)
     .then((value) => {
       snapshotCache.set(bareRepo, { at: Date.now(), value });
@@ -104,12 +110,18 @@ async function readRepoSnapshotFast(
       .catch(() => null),
   ]);
   const refs = branchText.split('\n').flatMap((line) => {
-    if (line.length === 0) return [];
+    if (line.length === 0) {
+      return [];
+    }
     const tab = line.indexOf('\t');
-    if (tab <= 0) return [];
+    if (tab <= 0) {
+      return [];
+    }
     const name = line.slice(0, tab);
     const sha = asSha(line.slice(tab + 1));
-    if (!sha) return [];
+    if (!sha) {
+      return [];
+    }
     return [{ name, sha }];
   });
   const branches = counts
@@ -162,12 +174,19 @@ export function deleteBranchIfMatches(
     branch.startsWith('/') ||
     branch.endsWith('/') ||
     branch.includes('//')
-  )
+  ) {
     return 'skipped';
-  if (!SHA.test(expectedSha)) return 'skipped';
+  }
+  if (!SHA.test(expectedSha)) {
+    return 'skipped';
+  }
   const current = readBranchSha(bareRepo, branch);
-  if (!current) return 'skipped';
-  if (current !== expectedSha.toLowerCase()) return 'moved';
+  if (!current) {
+    return 'skipped';
+  }
+  if (current !== expectedSha.toLowerCase()) {
+    return 'moved';
+  }
   try {
     gitSync(bareRepo, ['update-ref', '-d', `refs/heads/${branch}`, expectedSha]);
     return 'deleted';
@@ -177,7 +196,9 @@ export function deleteBranchIfMatches(
 }
 
 export function retainCandidate(bareRepo: string, sha: string) {
-  if (!SHA.test(sha)) throw new Error('invalid candidate SHA');
+  if (!SHA.test(sha)) {
+    throw new Error('invalid candidate SHA');
+  }
   gitSync(bareRepo, ['update-ref', `refs/local-ci/candidates/${sha}`, sha]);
 }
 

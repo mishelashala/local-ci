@@ -50,7 +50,9 @@ export function mergeReady(run: MergeCandidate, repo: RepoSnapshot | null): bool
 }
 
 export function pushDevelopSha(runs: readonly MergeCandidate[], repo: RepoSnapshot | null): string | null {
-  if (repo === null || !isSha40(repo.develop)) return null;
+  if (repo === null || !isSha40(repo.develop)) {
+    return null;
+  }
   const develop = repo.develop;
   const candidate = runs.some(
     (run) => run.status === 'passed' && run.target === 'develop' && run.integratedAt && run.candidateSha === develop,
@@ -72,7 +74,9 @@ export function mainSha(repo: RepoSnapshot | null): string | null {
 export function pushMainSha(runs: readonly MergeCandidate[], repo: RepoSnapshot | null): string | null {
   const main = mainSha(repo);
   const develop = repo?.develop;
-  if (!main || !isSha40(develop)) return null;
+  if (!main || !isSha40(develop)) {
+    return null;
+  }
   const match = runs.find(
     (run) =>
       run.target === 'main' &&

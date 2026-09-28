@@ -23,9 +23,15 @@ export function asPush(body: PushBody) {
   if (typeof body.repository !== 'string' || body.repository.length === 0 || body.repository.length > 80) {
     return 'repository is required';
   }
-  if (typeof body.ref !== 'string' || !REF.test(body.ref)) return 'ref must be a branch';
-  if (typeof body.oldSha !== 'string' || !SHA.test(body.oldSha)) return 'oldSha must be a SHA';
-  if (typeof body.newSha !== 'string' || !SHA.test(body.newSha)) return 'newSha must be a SHA';
+  if (typeof body.ref !== 'string' || !REF.test(body.ref)) {
+    return 'ref must be a branch';
+  }
+  if (typeof body.oldSha !== 'string' || !SHA.test(body.oldSha)) {
+    return 'oldSha must be a SHA';
+  }
+  if (typeof body.newSha !== 'string' || !SHA.test(body.newSha)) {
+    return 'newSha must be a SHA';
+  }
   return {
     repository: body.repository,
     ref: body.ref,
@@ -35,7 +41,9 @@ export function asPush(body: PushBody) {
 }
 
 export function repositoryFor(id: unknown) {
-  if (typeof id === 'string' && REPOSITORY_ID.test(id)) return getRepository(id);
+  if (typeof id === 'string' && REPOSITORY_ID.test(id)) {
+    return getRepository(id);
+  }
   return undefined;
 }
 
@@ -43,7 +51,9 @@ export async function snapshotFor(repository: NonNullable<ReturnType<typeof getR
   let syncError: string | null = null;
   if (sync) {
     try {
-      if (!integrationControl(repository.id)) await synchronizeDevelop(repository.barePath);
+      if (!integrationControl(repository.id)) {
+        await synchronizeDevelop(repository.barePath);
+      }
       await synchronizeBranch(repository.barePath, 'main');
     } catch (error) {
       syncError = error instanceof Error ? error.message : String(error);
@@ -63,12 +73,17 @@ export async function snapshotFor(repository: NonNullable<ReturnType<typeof getR
         run.headSha === snapshot.develop,
     );
     let status: typeof branch.status = 'idle';
-    if (branch.name === 'develop' && mainRun?.candidateSha) status = 'ready-to-deploy';
-    else if (readyMerge && (branch.behindDevelop ?? 0) <= MAX_BRANCH_DRIFT) status = 'ready-to-merge';
-    else if ((branch.behindDevelop ?? 0) > MAX_BRANCH_DRIFT) status = 'sync-required';
-    else if (latest?.status === 'queued' || latest?.status === 'running' || latest?.status === 'failed')
+    if (branch.name === 'develop' && mainRun?.candidateSha) {
+      status = 'ready-to-deploy';
+    } else if (readyMerge && (branch.behindDevelop ?? 0) <= MAX_BRANCH_DRIFT) {
+      status = 'ready-to-merge';
+    } else if ((branch.behindDevelop ?? 0) > MAX_BRANCH_DRIFT) {
+      status = 'sync-required';
+    } else if (latest?.status === 'queued' || latest?.status === 'running' || latest?.status === 'failed') {
       status = latest.status;
-    else if (latest?.status === 'passed') status = 'passed';
+    } else if (latest?.status === 'passed') {
+      status = 'passed';
+    }
     return { ...branch, status };
   });
   return {

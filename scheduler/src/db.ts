@@ -202,7 +202,9 @@ export function recordCandidate(input: CandidateInput) {
       )
       .run(branch, input.repository, target, target);
     db.insert(runs).values(row).run();
-    if (input.logLine) appendLog(row.id, input.logLine);
+    if (input.logLine) {
+      appendLog(row.id, input.logLine);
+    }
   });
   write();
   return getRun(row.id) ?? row;
@@ -364,7 +366,9 @@ export function activeRunIds(repository: string) {
 
 export function deleteRepository(id: string) {
   const existing = getRepository(id);
-  if (!existing) return false;
+  if (!existing) {
+    return false;
+  }
   sqlite.transaction(() => {
     sqlite.prepare(`DELETE FROM logs WHERE run_id IN (SELECT id FROM runs WHERE repository = ?)`).run(id);
     sqlite.prepare(`DELETE FROM workflow_runs WHERE run_id IN (SELECT id FROM runs WHERE repository = ?)`).run(id);
@@ -430,7 +434,9 @@ export function smokeForCandidate(repository: string, sha: string) {
 export function registerWorkflows(runId: string, paths: string[]) {
   const register = sqlite.prepare(`INSERT OR IGNORE INTO workflow_runs (run_id, path, status) VALUES (?, ?, 'queued')`);
   sqlite.transaction(() => {
-    for (const path of paths) register.run(runId, path);
+    for (const path of paths) {
+      register.run(runId, path);
+    }
   })();
 }
 
@@ -447,12 +453,13 @@ export function finishWorkflow(runId: string, path: string, exitCode: number) {
 }
 
 export function listLogLines(runId: string, workflowPath?: string): string[] {
-  if (workflowPath)
+  if (workflowPath) {
     return (
       sqlite
         .prepare(`SELECT line FROM logs WHERE run_id = ? AND workflow_path = ? ORDER BY seq`)
         .all(runId, workflowPath) as { line: string }[]
     ).map((row) => row.line);
+  }
   return db
     .select()
     .from(logs)
@@ -492,8 +499,12 @@ export function cancelQueuedRun(runId: string) {
 
 export function retryRun(runId: string) {
   const prior = getRun(runId);
-  if (!prior || !['failed', 'canceled', 'stale'].includes(prior.status)) return undefined;
-  if (!prior.candidateSha || !prior.baseSha || !prior.headSha) return undefined;
+  if (!prior || !['failed', 'canceled', 'stale'].includes(prior.status)) {
+    return undefined;
+  }
+  if (!prior.candidateSha || !prior.baseSha || !prior.headSha) {
+    return undefined;
+  }
   return recordCandidate({
     repository: prior.repository,
     ref: prior.ref,
@@ -510,7 +521,9 @@ export function retryRun(runId: string) {
 
 export function claimNextRunGlobal() {
   const claim = sqlite.transaction(() => {
-    if (sqlite.prepare(`SELECT id FROM runs WHERE status = 'running' LIMIT 1`).get()) return undefined;
+    if (sqlite.prepare(`SELECT id FROM runs WHERE status = 'running' LIMIT 1`).get()) {
+      return undefined;
+    }
     for (const repository of listRepositories()) {
       // Current refs are checked by the worker before this transaction as well.
       staleCandidates(
@@ -524,7 +537,9 @@ export function claimNextRunGlobal() {
       WHERE r.status = 'queued' AND (r.target != 'develop' OR c.mode IS NULL)
       ORDER BY CASE WHEN r.target = 'smoke' THEN 0 ELSE 1 END, r.created_at ASC, r.id ASC LIMIT 1`)
       .get() as { id: string } | undefined;
-    if (!next) return undefined;
+    if (!next) {
+      return undefined;
+    }
     const changed = sqlite
       .prepare(`UPDATE runs SET status = 'running', started_at = ? WHERE id = ? AND status = 'queued'`)
       .run(Date.now(), next.id);
@@ -538,18 +553,26 @@ export function claimNextRun(developSha: string | null, mainSha: string | null) 
     const firstQueued = sqlite
       .prepare(`SELECT id, repository FROM runs WHERE status = 'queued' ORDER BY created_at ASC LIMIT 1`)
       .get() as { id: string; repository: string } | undefined;
-    if (!firstQueued) return undefined;
+    if (!firstQueued) {
+      return undefined;
+    }
     staleCandidates(firstQueued.repository, developSha, mainSha);
     const running = sqlite.prepare(`SELECT id FROM runs WHERE status = 'running' LIMIT 1`).get();
-    if (running) return undefined;
+    if (running) {
+      return undefined;
+    }
     const next = sqlite.prepare(`SELECT id FROM runs WHERE status = 'queued' ORDER BY created_at ASC LIMIT 1`).get() as
       | { id: string }
       | undefined;
-    if (!next) return undefined;
+    if (!next) {
+      return undefined;
+    }
     const updated = sqlite
       .prepare(`UPDATE runs SET status = 'running', started_at = ? WHERE id = ? AND status = 'queued'`)
       .run(Date.now(), next.id);
-    if (updated.changes !== 1) return undefined;
+    if (updated.changes !== 1) {
+      return undefined;
+    }
     return getRun(next.id);
   });
   return claim();
@@ -559,15 +582,21 @@ export function claimNextRunForRepository(repository: string, developSha: string
   const claim = sqlite.transaction(() => {
     staleCandidates(repository, developSha, mainSha);
     const running = sqlite.prepare(`SELECT id FROM runs WHERE status = 'running' LIMIT 1`).get();
-    if (running) return undefined;
+    if (running) {
+      return undefined;
+    }
     const next = sqlite
       .prepare(`SELECT id FROM runs WHERE status = 'queued' AND repository = ? ORDER BY created_at ASC LIMIT 1`)
       .get(repository) as { id: string } | undefined;
-    if (!next) return undefined;
+    if (!next) {
+      return undefined;
+    }
     const updated = sqlite
       .prepare(`UPDATE runs SET status = 'running', started_at = ? WHERE id = ? AND status = 'queued'`)
       .run(Date.now(), next.id);
-    if (updated.changes !== 1) return undefined;
+    if (updated.changes !== 1) {
+      return undefined;
+    }
     return getRun(next.id);
   });
   return claim();

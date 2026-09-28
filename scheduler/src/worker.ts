@@ -36,7 +36,11 @@ function gitLogged(runId: string, args: string[], cwd?: string): Promise<number>
         tail += chunk;
         const lines = tail.split(/\r\n|\r|\n/);
         tail = lines.pop() ?? '';
-        for (const line of lines) if (line) appendLog(runId, line);
+        for (const line of lines) {
+          if (line) {
+            appendLog(runId, line);
+          }
+        }
       });
     }
     child.on('error', (error) => {
@@ -44,7 +48,9 @@ function gitLogged(runId: string, args: string[], cwd?: string): Promise<number>
       resolve(1);
     });
     child.on('close', (code) => {
-      if (tail) appendLog(runId, tail);
+      if (tail) {
+        appendLog(runId, tail);
+      }
       resolve(code ?? 1);
     });
   });
@@ -52,7 +58,9 @@ function gitLogged(runId: string, args: string[], cwd?: string): Promise<number>
 
 export function cancelActiveRun(id: string) {
   const controller = active.get(id);
-  if (!controller) return false;
+  if (!controller) {
+    return false;
+  }
   appendLog(id, 'cancel requested');
   controller.abort('canceled');
   return true;
@@ -72,17 +80,26 @@ async function execute(run: ClaimedRun) {
   let exitCode: number | null = 1;
   try {
     const repository = getRepository(run.repository);
-    if (!repository) throw new Error(`unknown repository ${run.repository}`);
-    if (!run.candidateSha || run.newSha !== run.candidateSha) throw new Error('run has no immutable candidate SHA');
+    if (!repository) {
+      throw new Error(`unknown repository ${run.repository}`);
+    }
+    if (!run.candidateSha || run.newSha !== run.candidateSha) {
+      throw new Error('run has no immutable candidate SHA');
+    }
     mkdirSync(workRoot, { recursive: true });
     rmSync(workDir, { recursive: true, force: true });
-    if ((await gitLogged(run.id, ['clone', '--local', '--no-checkout', repository.barePath, workDir])) !== 0)
+    if ((await gitLogged(run.id, ['clone', '--local', '--no-checkout', repository.barePath, workDir])) !== 0) {
       throw new Error('git clone failed');
-    if ((await gitLogged(run.id, ['fetch', 'origin', `refs/local-ci/candidates/${run.candidateSha}`], workDir)) !== 0)
+    }
+    if ((await gitLogged(run.id, ['fetch', 'origin', `refs/local-ci/candidates/${run.candidateSha}`], workDir)) !== 0) {
       throw new Error('candidate fetch failed');
-    if ((await gitLogged(run.id, ['checkout', '--detach', run.candidateSha], workDir)) !== 0)
+    }
+    if ((await gitLogged(run.id, ['checkout', '--detach', run.candidateSha], workDir)) !== 0) {
       throw new Error('candidate checkout failed');
-    if (controller.signal.aborted) return;
+    }
+    if (controller.signal.aborted) {
+      return;
+    }
     exitCode = await runner.run({
       workspace: workDir,
       repository: run.repository,
@@ -115,11 +132,14 @@ async function execute(run: ClaimedRun) {
         appendLog(run.id, `integration deferred: ${String(error)}`);
       }
     }
-    if (run.target === 'smoke') await completeSmoke(run.id, status);
+    if (run.target === 'smoke') {
+      await completeSmoke(run.id, status);
+    }
     if (status !== 'passed' && run.target === 'main') {
       await withRepositoryLock(run.repository, () => {
-        if (integrationControl(run.repository)?.mode === 'frozen' && !pendingPromotion(run.repository))
+        if (integrationControl(run.repository)?.mode === 'frozen' && !pendingPromotion(run.repository)) {
           clearIntegrationControl(run.repository);
+        }
       });
     }
     active.delete(run.id);
@@ -130,7 +150,9 @@ async function execute(run: ClaimedRun) {
 export function startWorker() {
   let busy = false;
   const tick = async () => {
-    if (busy) return;
+    if (busy) {
+      return;
+    }
     busy = true;
     try {
       await maintainIntegrationQueue();

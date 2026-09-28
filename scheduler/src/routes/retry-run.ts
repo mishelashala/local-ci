@@ -7,9 +7,13 @@ import { repositoryFor } from './context.ts';
 export function registerRetryRunRoute(app: FastifyInstance) {
   app.post<{ Params: { id: string } }>('/runs/:id/retry', async (request, reply) => {
     const run = getRun(request.params.id);
-    if (!run) return reply.code(404).send({ error: 'run not found' });
+    if (!run) {
+      return reply.code(404).send({ error: 'run not found' });
+    }
     const repository = repositoryFor(run.repository);
-    if (!repository) return reply.code(404).send({ error: 'repository not found' });
+    if (!repository) {
+      return reply.code(404).send({ error: 'repository not found' });
+    }
     try {
       await synchronizeDevelop(repository.barePath, true);
     } catch (error) {
@@ -27,12 +31,16 @@ export function registerRetryRunRoute(app: FastifyInstance) {
       run.target === 'main' || run.target === 'reconcile'
         ? readDevelopSha(repository.barePath)
         : readBranchSha(repository.barePath, run.branch);
-    if (run.target === 'post-merge' && readDevelopSha(repository.barePath) !== run.candidateSha)
+    if (run.target === 'post-merge' && readDevelopSha(repository.barePath) !== run.candidateSha) {
       return reply.code(409).send({ error: 'develop moved since the post-merge run' });
-    if (base !== run.baseSha || head !== run.headSha)
+    }
+    if (base !== run.baseSha || head !== run.headSha) {
       return reply.code(409).send({ error: 'branch SHAs moved; create a new validation' });
+    }
     const next = retryRun(run.id);
-    if (!next) return reply.code(409).send({ error: 'run has no reusable candidate' });
+    if (!next) {
+      return reply.code(409).send({ error: 'run has no reusable candidate' });
+    }
     return reply.code(201).send({ run: next });
   });
 }

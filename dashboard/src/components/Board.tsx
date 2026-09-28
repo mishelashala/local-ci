@@ -61,11 +61,16 @@ function repositoryQuery(): string {
 
 function setRepositoryQuery(id: string) {
   const url = new URL(window.location.href);
-  if (id) url.searchParams.set('repository', id);
-  else url.searchParams.delete('repository');
+  if (id) {
+    url.searchParams.set('repository', id);
+  } else {
+    url.searchParams.delete('repository');
+  }
   const next = `${url.pathname}${url.search}${url.hash}`;
   const current = `${window.location.pathname}${window.location.search}${window.location.hash}`;
-  if (next !== current) window.history.replaceState(null, '', next);
+  if (next !== current) {
+    window.history.replaceState(null, '', next);
+  }
 }
 
 function normalize(run: RunInput): Run {
@@ -92,7 +97,9 @@ function normalizeRepo(body: RepoSnapshot): RepoSnapshot {
     maxBranchDrift: Number.isInteger(body.maxBranchDrift) ? body.maxBranchDrift : 10,
     develop: body.develop ?? null,
     branches: raw.flatMap((branch) => {
-      if (!branch || typeof branch.name !== 'string' || typeof branch.sha !== 'string') return [];
+      if (!branch || typeof branch.name !== 'string' || typeof branch.sha !== 'string') {
+        return [];
+      }
       return [
         {
           name: branch.name,
@@ -124,7 +131,9 @@ async function postJson(
   let body: Record<string, unknown> = {};
   try {
     const parsed: unknown = await response.json();
-    if (parsed !== null && typeof parsed === 'object') body = parsed as Record<string, unknown>;
+    if (parsed !== null && typeof parsed === 'object') {
+      body = parsed as Record<string, unknown>;
+    }
   } catch {
     body = {};
   }
@@ -136,7 +145,9 @@ function apiError(body: Record<string, unknown>, status: number, label: string):
 }
 
 function keepGitHub(current: RepoSnapshot | undefined, next: RepoSnapshot): RepoSnapshot {
-  if (!current || current.id !== next.id) return next;
+  if (!current || current.id !== next.id) {
+    return next;
+  }
   return {
     ...next,
     githubDevelop: next.githubDevelop ?? current.githubDevelop,
@@ -190,9 +201,13 @@ export function Board() {
 
   async function refreshRuns(repositoryId: string) {
     const response = await fetch(`/api/runs?repository=${encodeURIComponent(repositoryId)}`);
-    if (!response.ok || activeIdRef.current !== repositoryId) return;
+    if (!response.ok || activeIdRef.current !== repositoryId) {
+      return;
+    }
     const body = (await response.json()) as { runs?: RunInput[] };
-    if (!Array.isArray(body.runs) || activeIdRef.current !== repositoryId) return;
+    if (!Array.isArray(body.runs) || activeIdRef.current !== repositoryId) {
+      return;
+    }
     setRuns(body.runs.map(normalize));
     setRunsReady(true);
     setOffline(false);
@@ -229,7 +244,9 @@ export function Board() {
     label: string,
     success: string | ((body: Record<string, unknown>) => string),
   ) {
-    if (busyLock.current) return;
+    if (busyLock.current) {
+      return;
+    }
     busyLock.current = key;
     setBusy(key);
     const repositoryId = activeIdRef.current;
@@ -238,7 +255,9 @@ export function Board() {
       if (result.ok && path === '/api/sync' && typeof result.body.id === 'string') {
         const saved = normalizeRepo(result.body as RepoSnapshot);
         setRepositories((items) => items.map((item) => (item.id === saved.id ? saved : item)));
-        if (activeIdRef.current === saved.id) setRepo(saved);
+        if (activeIdRef.current === saved.id) {
+          setRepo(saved);
+        }
       }
       if (result.ok && path === '/api/pushes' && typeof result.body.sha === 'string') {
         const sent = payload as { branch?: string };
@@ -253,8 +272,11 @@ export function Board() {
         }
       }
       await refreshBoard(repositoryId);
-      if (result.ok) notify('success', typeof success === 'function' ? success(result.body) : success);
-      else notify('error', apiError(result.body, result.status, label));
+      if (result.ok) {
+        notify('success', typeof success === 'function' ? success(result.body) : success);
+      } else {
+        notify('error', apiError(result.body, result.status, label));
+      }
     } catch {
       notify('error', `${label} request failed`);
     } finally {
@@ -268,9 +290,13 @@ export function Board() {
     void (async () => {
       try {
         const response = await fetch('/api/repositories');
-        if (!response.ok) throw new Error(String(response.status));
+        if (!response.ok) {
+          throw new Error(String(response.status));
+        }
         const body = (await response.json()) as { repositories?: RepoSnapshot[] };
-        if (cancel) return;
+        if (cancel) {
+          return;
+        }
         const snapshots = Array.isArray(body.repositories) ? body.repositories.map(normalizeRepo) : [];
         setRepositories(snapshots);
         const active = snapshots.find((item) => item.id === selectedRepositoryId) ?? snapshots[0];
@@ -285,18 +311,28 @@ export function Board() {
         setRepo(active);
         setRepoReady(true);
         const runsResponse = await fetch(`/api/runs?repository=${encodeURIComponent(active.id)}`);
-        if (!runsResponse.ok) throw new Error(String(runsResponse.status));
+        if (!runsResponse.ok) {
+          throw new Error(String(runsResponse.status));
+        }
         const runsBody = (await runsResponse.json()) as { runs?: RunInput[] };
-        if (cancel) return;
-        if (!Array.isArray(runsBody.runs)) throw new Error('runs');
+        if (cancel) {
+          return;
+        }
+        if (!Array.isArray(runsBody.runs)) {
+          throw new Error('runs');
+        }
         setRuns(runsBody.runs.map(normalize));
         setOffline(false);
         setRunsReady(true);
         setNow(Date.now());
         const synced = await fetch('/api/repositories?sync=1');
-        if (!synced.ok || cancel) return;
+        if (!synced.ok || cancel) {
+          return;
+        }
         const syncedBody = (await synced.json()) as { repositories?: RepoSnapshot[] };
-        if (cancel || !Array.isArray(syncedBody.repositories)) return;
+        if (cancel || !Array.isArray(syncedBody.repositories)) {
+          return;
+        }
         const refreshed = syncedBody.repositories.map(normalizeRepo);
         setRepositories(refreshed);
         setRepo(refreshed.find((item) => item.id === active.id) ?? refreshed[0] ?? null);
@@ -324,7 +360,9 @@ export function Board() {
   }
 
   useEffect(() => {
-    if (selectedId && runs.some((run) => run.id === selectedId)) return;
+    if (selectedId && runs.some((run) => run.id === selectedId)) {
+      return;
+    }
     const running = runs.find((run) => run.status === 'running');
     setSelectedId(running?.id ?? runs[0]?.id ?? null);
   }, [runs, selectedId]);
@@ -334,18 +372,26 @@ export function Board() {
   activeIdRef.current = activeRepositoryId;
 
   useEffect(() => {
-    if (!repoReady) return;
+    if (!repoReady) {
+      return;
+    }
     setRepositoryQuery(activeRepositoryId);
   }, [repoReady, activeRepositoryId]);
 
   const live = runs.some((run) => run.status === 'queued' || run.status === 'running');
   const wasLive = useRef(false);
   useEffect(() => {
-    if (!runsReady || !activeRepositoryId) return;
+    if (!runsReady || !activeRepositoryId) {
+      return;
+    }
     const stopped = wasLive.current && !live;
     wasLive.current = live;
-    if (stopped) void refreshBoard(activeRepositoryId);
-    if (!live) return;
+    if (stopped) {
+      void refreshBoard(activeRepositoryId);
+    }
+    if (!live) {
+      return;
+    }
     const id = window.setInterval(() => {
       void refreshRuns(activeRepositoryId);
     }, 2000);

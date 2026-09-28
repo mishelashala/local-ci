@@ -10,11 +10,15 @@ import { startWorker } from './worker.ts';
 function discoverExistingRepositories() {
   mkdirSync(repositoryRoot, { recursive: true });
   for (const entry of readdirSync(repositoryRoot)) {
-    if (!entry.endsWith('.git')) continue;
+    if (!entry.endsWith('.git')) {
+      continue;
+    }
     const id = entry.slice(0, -4);
     const path = join(repositoryRoot, entry);
     try {
-      if (!statSync(join(path, 'HEAD')).isFile()) continue;
+      if (!statSync(join(path, 'HEAD')).isFile()) {
+        continue;
+      }
       const origin = readOrigin(path);
       const existing = getRepository(id);
       saveRepository({ id, name: existing?.name ?? id, barePath: path, origin });

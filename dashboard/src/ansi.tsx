@@ -17,7 +17,9 @@ type Span = {
 };
 
 function palette(mode: ColorMode, bright: boolean) {
-  if (mode === 'dark') return bright ? DARK_BRIGHT : DARK;
+  if (mode === 'dark') {
+    return bright ? DARK_BRIGHT : DARK;
+  }
   return bright ? LIGHT_BRIGHT : LIGHT;
 }
 
@@ -33,18 +35,34 @@ function applyCode(
     style.dim = false;
     return;
   }
-  if (code === 1) style.bold = true;
-  if (code === 2) style.dim = true;
+  if (code === 1) {
+    style.bold = true;
+  }
+  if (code === 2) {
+    style.dim = true;
+  }
   if (code === 22) {
     style.bold = false;
     style.dim = false;
   }
-  if (code === 39) style.color = undefined;
-  if (code === 49) style.background = undefined;
-  if (code >= 30 && code <= 37) style.color = palette(mode, false)[code - 30];
-  if (code >= 90 && code <= 97) style.color = palette(mode, true)[code - 90];
-  if (code >= 40 && code <= 47) style.background = palette(mode, false)[code - 40];
-  if (code >= 100 && code <= 107) style.background = palette(mode, true)[code - 100];
+  if (code === 39) {
+    style.color = undefined;
+  }
+  if (code === 49) {
+    style.background = undefined;
+  }
+  if (code >= 30 && code <= 37) {
+    style.color = palette(mode, false)[code - 30];
+  }
+  if (code >= 90 && code <= 97) {
+    style.color = palette(mode, true)[code - 90];
+  }
+  if (code >= 40 && code <= 47) {
+    style.background = palette(mode, false)[code - 40];
+  }
+  if (code >= 100 && code <= 107) {
+    style.background = palette(mode, true)[code - 100];
+  }
 }
 
 export function parseAnsi(text: string, mode: ColorMode): Span[] {
@@ -58,14 +76,20 @@ export function parseAnsi(text: string, mode: ColorMode): Span[] {
   let cursor = 0;
   for (const match of text.matchAll(ANSI)) {
     const index = match.index ?? 0;
-    if (index > cursor) spans.push({ text: text.slice(cursor, index), ...style });
+    if (index > cursor) {
+      spans.push({ text: text.slice(cursor, index), ...style });
+    }
     const codes = match[1].length === 0 ? [0] : match[1].split(';').map((part) => Number(part));
     for (const code of codes) {
-      if (Number.isFinite(code)) applyCode(style, code, mode);
+      if (Number.isFinite(code)) {
+        applyCode(style, code, mode);
+      }
     }
     cursor = index + match[0].length;
   }
-  if (cursor < text.length) spans.push({ text: text.slice(cursor), ...style });
+  if (cursor < text.length) {
+    spans.push({ text: text.slice(cursor), ...style });
+  }
   return spans.filter((span) => span.text.length > 0);
 }
 

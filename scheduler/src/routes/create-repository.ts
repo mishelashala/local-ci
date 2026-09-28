@@ -17,8 +17,12 @@ export function registerCreateRepositoryRoute(app: FastifyInstance) {
     const remoteName = github.match(/([^/:]+?)(?:\.git)?$/)?.[1] ?? '';
     const name = providedName || remoteName;
     const id = randomUUID();
-    if (!GITHUB_REMOTE.test(github)) return reply.code(400).send({ error: 'Use a git@, ssh://, or https:// remote.' });
-    if (name.length < 1 || name.length > 100) return reply.code(400).send({ error: 'Repository name is required.' });
+    if (!GITHUB_REMOTE.test(github)) {
+      return reply.code(400).send({ error: 'Use a git@, ssh://, or https:// remote.' });
+    }
+    if (name.length < 1 || name.length > 100) {
+      return reply.code(400).send({ error: 'Repository name is required.' });
+    }
     const path = bareRepo(id);
     mkdirSync(repositoryRoot, { recursive: true });
     let initialized = false;
@@ -32,8 +36,9 @@ export function registerCreateRepositoryRoute(app: FastifyInstance) {
       });
       for (const branch of ['main', 'develop']) {
         const sha = remoteSha(path, branch as 'main' | 'develop');
-        if (sha)
+        if (sha) {
           execFileSync('git', [`--git-dir=${path}`, 'update-ref', `refs/heads/${branch}`, sha], { stdio: 'ignore' });
+        }
       }
       if (!readBranchSha(path, 'main')) {
         const head = execFileSync('git', [`--git-dir=${path}`, 'ls-remote', '--symref', 'origin', 'HEAD'], {
@@ -44,12 +49,14 @@ export function registerCreateRepositoryRoute(app: FastifyInstance) {
               encoding: 'utf8',
             }).trim()
           : null;
-        if (headSha)
+        if (headSha) {
           execFileSync('git', [`--git-dir=${path}`, 'update-ref', 'refs/heads/main', headSha], { stdio: 'ignore' });
+        }
       }
       const main = readBranchSha(path, 'main');
-      if (main && !readBranchSha(path, 'develop'))
+      if (main && !readBranchSha(path, 'develop')) {
         execFileSync('git', [`--git-dir=${path}`, 'update-ref', 'refs/heads/develop', main], { stdio: 'ignore' });
+      }
       for (const hook of ['post-receive', 'pre-receive']) {
         copyFileSync(join(hookSourceRoot, hook), join(path, 'hooks', hook));
         execFileSync('chmod', ['+x', join(path, 'hooks', hook)]);
@@ -58,7 +65,9 @@ export function registerCreateRepositoryRoute(app: FastifyInstance) {
       clearRepoCache();
       return reply.code(201).send({ repository: await snapshotFor(repository!) });
     } catch (error) {
-      if (initialized) rmSync(path, { recursive: true, force: true });
+      if (initialized) {
+        rmSync(path, { recursive: true, force: true });
+      }
       const message = error instanceof Error ? error.message : String(error);
       return reply.code(502).send({ error: `Could not connect repository: ${message}` });
     }

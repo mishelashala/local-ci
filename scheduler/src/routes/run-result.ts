@@ -6,7 +6,9 @@ import { workRoot } from '../paths.ts';
 export function registerRunResultRoute(app: FastifyInstance) {
   app.get<{ Params: { id: string } }>('/runs/:id/result', async (request, reply) => {
     const run = getRun(request.params.id);
-    if (!run) return reply.code(404).send({ error: 'run not found' });
+    if (!run) {
+      return reply.code(404).send({ error: 'run not found' });
+    }
     const lines = listLogLines(run.id);
     const smoke =
       run.target === 'develop' && run.candidateSha ? smokeForCandidate(run.repository, run.candidateSha) : undefined;

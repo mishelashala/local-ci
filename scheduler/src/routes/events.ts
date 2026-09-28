@@ -10,22 +10,29 @@ import { asPush, DELETED, MAX_BRANCH_DRIFT, type PushBody, repositoryFor } from 
 export function registerEventsRoute(app: FastifyInstance) {
   app.post('/events', async (request, reply) => {
     const parsed = asPush(request.body as PushBody);
-    if (typeof parsed === 'string') return reply.code(400).send({ error: parsed });
+    if (typeof parsed === 'string') {
+      return reply.code(400).send({ error: parsed });
+    }
     const repository = repositoryFor(parsed.repository);
-    if (!repository) return reply.code(404).send({ error: 'repository is not registered' });
+    if (!repository) {
+      return reply.code(404).send({ error: 'repository is not registered' });
+    }
     return withRepositoryLock(repository.id, async () => {
       const repoPath = repository.barePath;
       if (parsed.ref === 'refs/heads/develop' || parsed.ref === 'refs/heads/main') {
         return reply.code(400).send({ error: 'that branch moves only from the dashboard' });
       }
-      if (parsed.newSha === DELETED) return { ignored: 'branch delete' };
+      if (parsed.newSha === DELETED) {
+        return { ignored: 'branch delete' };
+      }
 
       try {
         const sync = integrationControl(repository.id)
           ? branchSync(repoPath, 'develop')
           : await synchronizeDevelop(repoPath, true);
-        if (sync.relation === 'diverged')
+        if (sync.relation === 'diverged') {
           return reply.code(409).send({ error: 'develop diverged from GitHub; validate a reconciliation first' });
+        }
       } catch (error) {
         return reply.code(502).send({ error: `GitHub synchronization failed: ${String(error)}` });
       }

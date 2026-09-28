@@ -53,7 +53,9 @@ export function ConnectDialog({
   open: boolean;
   onClose: () => void;
 }) {
-  if (!repo) return null;
+  if (!repo) {
+    return null;
+  }
   const add = `git remote add ci ${repo.barePath}`;
   return (
     <Dialog open={open} onClose={onClose} fullWidth maxWidth="sm">

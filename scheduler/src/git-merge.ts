@@ -13,7 +13,9 @@ function requireSha(value: string, name: string) {
 }
 
 function printsConflict(text: string) {
-  if (text.includes('CONFLICT')) return true;
+  if (text.includes('CONFLICT')) {
+    return true;
+  }
   return text.split('\n').some((line) => CONFLICT_INFO.test(line));
 }
 
@@ -57,7 +59,9 @@ export async function createTemporaryMerge(input: {
     throw error;
   }
 
-  if (printsConflict(mergeStdout)) return { conflict: true };
+  if (printsConflict(mergeStdout)) {
+    return { conflict: true };
+  }
 
   const treeSha = mergeStdout.trim().split(/\r?\n/, 1)[0]?.trim() ?? '';
   if (!SHA.test(treeSha)) {
@@ -65,7 +69,9 @@ export async function createTemporaryMerge(input: {
   }
 
   const message = input.message.replace(/[\r\n]/g, ' ').trim();
-  if (!message) throw new Error('merge message is empty');
+  if (!message) {
+    throw new Error('merge message is empty');
+  }
 
   const commit = await git([gitDir, 'commit-tree', treeSha, '-p', input.baseSha, '-p', input.headSha, '-m', message]);
   const sha = commit.stdout.trim();

@@ -16,12 +16,17 @@ export function registerResetDevelopRoute(app: FastifyInstance) {
   app.post('/reset-develop', async (request, reply) => {
     const body = request.body as { repository?: unknown } | null;
     const repository = repositoryFor(body?.repository);
-    if (!repository) return reply.code(404).send({ error: 'repository not found' });
+    if (!repository) {
+      return reply.code(404).send({ error: 'repository not found' });
+    }
     return withRepositoryLock(repository.id, async () => {
       const promotion = pendingPromotion(repository.id);
-      if (!promotion) return reply.code(409).send({ error: 'no pending promotion' });
-      if (!integrationControl(repository.id))
+      if (!promotion) {
+        return reply.code(409).send({ error: 'no pending promotion' });
+      }
+      if (!integrationControl(repository.id)) {
         return reply.code(409).send({ error: 'promotion freeze is missing; resolve recovery before reset' });
+      }
       const path = repository.barePath;
       try {
         await synchronizeDevelop(path, true);
@@ -34,8 +39,9 @@ export function registerResetDevelopRoute(app: FastifyInstance) {
         let result = 'Remote develop already reset';
         if (githubSha !== promotion.mainSha) {
           assertRemoteUnchanged(path, 'develop', promotion.githubDevelopSha);
-          if (readDevelopSha(path) !== promotion.developSha)
+          if (readDevelopSha(path) !== promotion.developSha) {
             return reply.code(409).send({ error: 'local develop moved since promotion' });
+          }
           const lease = `--force-with-lease=refs/heads/develop:${promotion.githubDevelopSha ?? ''}`;
           result = execFileSync(
             'git',

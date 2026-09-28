@@ -13,7 +13,9 @@ const ColorModeContext = createContext<ColorModeValue | null>(null);
 
 function initialMode(): ColorMode {
   const stored = localStorage.getItem(STORAGE_KEY);
-  if (stored === 'light' || stored === 'dark') return stored;
+  if (stored === 'light' || stored === 'dark') {
+    return stored;
+  }
   return window.matchMedia('(prefers-color-scheme: light)').matches ? 'light' : 'dark';
 }
 
@@ -43,6 +45,8 @@ export function ColorModeProvider({ children }: { children: ReactNode }) {
 
 export function useColorMode() {
   const value = useContext(ColorModeContext);
-  if (!value) throw new Error('useColorMode must be used inside ColorModeProvider');
+  if (!value) {
+    throw new Error('useColorMode must be used inside ColorModeProvider');
+  }
   return value;
 }

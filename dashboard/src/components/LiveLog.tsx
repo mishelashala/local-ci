@@ -25,7 +25,9 @@ type Workflow = {
 };
 
 function elapsed(run: LiveRun, now: number): string {
-  if (run.startedAt === null) return formatAgo(now, run.createdAt);
+  if (run.startedAt === null) {
+    return formatAgo(now, run.createdAt);
+  }
   return formatDuration((run.finishedAt ?? now) - run.startedAt);
 }
 
@@ -65,11 +67,15 @@ export function LiveLog({ runId }: { runId: string }) {
           ),
           fetch(`/api/runs/${runId}/workflows`),
         ]);
-        if (!runResponse.ok || !logResponse.ok || !workflowsResponse.ok) throw new Error(String(runResponse.status));
+        if (!runResponse.ok || !logResponse.ok || !workflowsResponse.ok) {
+          throw new Error(String(runResponse.status));
+        }
         const runBody = (await runResponse.json()) as { run: LiveRun };
         const logBody = (await logResponse.json()) as { lines: string[] };
         const workflowBody = (await workflowsResponse.json()) as { workflows: Workflow[] };
-        if (cancel) return;
+        if (cancel) {
+          return;
+        }
         setRun({
           ...runBody.run,
           startedAt: runBody.run.startedAt ?? null,
@@ -101,17 +107,23 @@ export function LiveLog({ runId }: { runId: string }) {
   const jobs = groupSteps(steps);
 
   useEffect(() => {
-    if (pickedStep.current) return;
+    if (pickedStep.current) {
+      return;
+    }
     const running = steps.find((step) => step.status === 'running');
     const failed = [...steps].reverse().find((step) => step.status === 'failed');
     setOpenStep(running?.id ?? failed?.id ?? steps.at(-1)?.id ?? null);
   }, [lines]);
 
   useEffect(() => {
-    if (lines.length === seen.current) return;
+    if (lines.length === seen.current) {
+      return;
+    }
     seen.current = lines.length;
     const el = scroller.current;
-    if (!el) return;
+    if (!el) {
+      return;
+    }
     el.scrollTop = el.scrollHeight;
   }, [lines, openStep]);
 

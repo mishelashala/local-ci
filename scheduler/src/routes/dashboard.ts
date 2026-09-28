@@ -25,13 +25,16 @@ export function registerDashboardRoute(app: FastifyInstance) {
       candidate.startsWith(safeRoot) && existsSync(candidate) && statSync(candidate).isFile()
         ? candidate
         : join(dashboardDistRoot, 'index.html');
-    if (!existsSync(file))
+    if (!existsSync(file)) {
       return reply
         .code(503)
         .type('text/plain')
         .send('Dashboard is building. Start Local CI with npm run dev and try again.');
+    }
     reply.type(mimeTypes[extname(file)] ?? 'application/octet-stream');
-    if (extname(file) === '.html') reply.header('cache-control', 'no-cache');
+    if (extname(file) === '.html') {
+      reply.header('cache-control', 'no-cache');
+    }
     return reply.send(createReadStream(file));
   });
 }

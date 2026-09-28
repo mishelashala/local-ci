@@ -89,7 +89,9 @@ export function Onboarding({
             value={github}
             onChange={(event) => setGithub(event.target.value)}
             onKeyDown={(event) => {
-              if (event.key === 'Enter') void save();
+              if (event.key === 'Enter') {
+                void save();
+              }
             }}
             error={error !== null}
             helperText={error ?? 'The scheduler host must have Git access to this remote.'}
