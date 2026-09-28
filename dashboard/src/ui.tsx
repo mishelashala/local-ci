@@ -7,13 +7,21 @@ export function Panel({
   action,
   children,
   fill = false,
+  grow = false,
   scroll = true,
+  open = true,
+  onToggle,
+  maxHeight,
 }: {
   title: string;
   action?: ReactNode;
   children: ReactNode;
   fill?: boolean;
+  grow?: boolean;
   scroll?: boolean;
+  open?: boolean;
+  onToggle?: () => void;
+  maxHeight?: number;
 }) {
   return (
     <Box
@@ -21,7 +29,9 @@ export function Panel({
         display: 'flex',
         flexDirection: 'column',
         minHeight: 0,
-        height: fill ? '100%' : 'auto',
+        flex: grow && open ? 1 : '0 0 auto',
+        height: fill && open ? '100%' : 'auto',
+        maxHeight: open ? maxHeight : undefined,
         border: '1px solid',
         borderColor: 'divider',
         borderRadius: 1,
@@ -30,23 +40,34 @@ export function Panel({
       }}
     >
       <Box
+        onClick={onToggle}
         sx={{
           display: 'flex',
           alignItems: 'center',
           gap: 1,
           px: 1.5,
           height: 36,
-          borderBottom: '1px solid',
+          borderBottom: open ? '1px solid' : 'none',
           borderColor: 'divider',
           flex: '0 0 auto',
+          cursor: onToggle ? 'pointer' : 'default',
         }}
       >
+        {onToggle && (
+          <Typography sx={{ width: 12, fontSize: 12, lineHeight: 1, color: 'text.secondary' }}>
+            {open ? '▾' : '▸'}
+          </Typography>
+        )}
         <Typography variant="overline" sx={{ flex: 1, lineHeight: 1 }}>
           {title}
         </Typography>
-        {action}
+        {action && <Box onClick={(event) => event.stopPropagation()}>{action}</Box>}
       </Box>
-      <Box sx={{ flex: fill ? 1 : undefined, minHeight: 0, overflow: scroll ? 'auto' : 'hidden' }}>{children}</Box>
+      {open && (
+        <Box sx={{ flex: fill || grow ? 1 : undefined, minHeight: 0, overflow: scroll ? 'auto' : 'hidden' }}>
+          {children}
+        </Box>
+      )}
     </Box>
   );
 }

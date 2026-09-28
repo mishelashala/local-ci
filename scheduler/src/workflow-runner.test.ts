@@ -23,6 +23,11 @@ test('container architecture matches GitHub ubuntu-latest unless configured', ()
 test('job env mounts gh and keeps the token out of the command line', () => {
   const contents = actEnvContents('/usr/bin', 'secret-token', 'PATH=/old\nGH_TOKEN=old\nFEATURE=1\n');
   assert.match(contents, /^FEATURE=1\nPATH=\/usr\/bin\nGH_TOKEN=secret-token\nGITHUB_TOKEN=secret-token\n$/);
+  assert.match(
+    actEnvContents('/usr/bin', null, 'LOCAL_CI_CHANGED_FILES=old\n', 'src/a.ts,src/b.ts'),
+    /LOCAL_CI_CHANGED_FILES=src\/a.ts,src\/b.ts\n$/,
+  );
+  assert.doesNotMatch(actEnvContents('/usr/bin', null, 'LOCAL_CI_CHANGED_FILES=old\n', 'src/a.ts'), /old/);
   assert.doesNotMatch(contents, /\/old/);
   const option = ghContainerOption('/opt/ci/gh');
   assert.equal(option, '--volume /opt/ci/gh:/usr/local/bin/gh:ro');

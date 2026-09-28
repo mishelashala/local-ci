@@ -90,7 +90,7 @@ export function registerPushesRoute(app: FastifyInstance) {
       }
       const candidate = findPassedMain(repository.id, mainSha, developSha);
       if (!candidate) {
-        return reply.code(409).send({ error: 'develop → main has not passed against the current branches' });
+        return reply.code(409).send({ error: 'prepare develop → main against the current branches first' });
       }
       const pushed = await pushRef(repoPath, candidate, 'refs/heads/main');
       if ('error' in pushed) {

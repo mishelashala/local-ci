@@ -7,15 +7,11 @@ import { useToast } from '../toast';
 
 export function Repositories({
   repositories,
-  activeId,
-  onOpen,
   onAdd,
   onRemoved,
   onClose,
 }: {
   repositories: RepoSnapshot[];
-  activeId: string;
-  onOpen: (id: string) => void;
   onAdd: () => void;
   onRemoved: (id: string) => void;
   onClose: () => void;
@@ -97,14 +93,6 @@ export function Repositories({
                 <Typography sx={{ fontWeight: 600, flex: 1 }} noWrap>
                   {repository.name}
                 </Typography>
-                {repository.id === activeId && (
-                  <Typography variant="caption" color="success.main">
-                    open
-                  </Typography>
-                )}
-                <Button size="small" onClick={() => onOpen(repository.id)}>
-                  Open
-                </Button>
                 <Button
                   size="small"
                   color="error"

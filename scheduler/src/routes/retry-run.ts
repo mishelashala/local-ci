@@ -14,6 +14,9 @@ export function registerRetryRunRoute(app: FastifyInstance) {
     if (!repository) {
       return reply.code(404).send({ error: 'repository not found' });
     }
+    if (run.target === 'main') {
+      return reply.code(409).send({ error: 'GitHub runs the develop → main tests' });
+    }
     try {
       await synchronizeDevelop(repository.barePath, true);
     } catch (error) {

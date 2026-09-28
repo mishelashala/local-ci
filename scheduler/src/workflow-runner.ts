@@ -25,7 +25,7 @@ export interface WorkflowRunner {
     sha: string;
     headSha: string;
     baseSha: string;
-    target: 'develop' | 'main' | 'reconcile' | 'post-merge' | 'smoke';
+    target: 'develop' | 'main' | 'reconcile' | 'post-merge' | 'smoke' | 'develop-gate';
     runId: string;
     signal: AbortSignal;
     log: (line: string, workflowPath?: string) => void;
@@ -65,18 +65,26 @@ export function ghContainerOption(binary: string): string {
   return `--volume ${quoteArg(binary)}:/usr/local/bin/gh:ro`;
 }
 
-export function actEnvContents(pathValue: string, token: string | null, projectEnv = ''): string {
+export function actEnvContents(
+  pathValue: string,
+  token: string | null,
+  projectEnv = '',
+  changedFiles?: string,
+): string {
   const kept = projectEnv.split('\n').filter((line) => {
     const trimmed = line.trim();
     if (!trimmed || trimmed.startsWith('#')) {
       return Boolean(trimmed);
     }
     const key = trimmed.split('=', 1)[0];
-    return key !== 'PATH' && key !== 'GH_TOKEN' && key !== 'GITHUB_TOKEN';
+    return key !== 'PATH' && key !== 'GH_TOKEN' && key !== 'GITHUB_TOKEN' && key !== 'LOCAL_CI_CHANGED_FILES';
   });
   const lines = [...kept, `PATH=${pathValue}`];
   if (token) {
     lines.push(`GH_TOKEN=${token}`, `GITHUB_TOKEN=${token}`);
+  }
+  if (changedFiles !== undefined) {
+    lines.push(`LOCAL_CI_CHANGED_FILES=${changedFiles}`);
   }
   return `${lines.join('\n')}\n`;
 }
@@ -457,7 +465,53 @@ function matches(patterns: string[] | undefined, value: string) {
   return patterns?.some((pattern) => minimatch(value, pattern)) ?? false;
 }
 
+function selectPushWorkflows(workspace: string): string[] {
+  const relative = existsSync(join(workspace, '.local-ci', 'workflows')) ? '.local-ci/workflows' : '.github/workflows';
+  const directory = join(workspace, relative);
+  if (!existsSync(directory)) {
+    throw new Error('no .local-ci/workflows or .github/workflows directory at the candidate SHA');
+  }
+  const files = readdirSync(directory)
+    .filter((name) => /\.ya?ml$/.test(name))
+    .sort();
+  const selected = files.filter((name) => {
+    const workflow = YAML.parse(readFileSync(join(directory, name), 'utf8')) as {
+      on?: { push?: { branches?: string[]; 'branches-ignore'?: string[] } | null };
+    } | null;
+    const push = workflow?.on?.push;
+    if (!push) {
+      return false;
+    }
+    if (push.branches && !matches(push.branches, 'develop')) {
+      return false;
+    }
+    if (matches(push['branches-ignore'], 'develop')) {
+      return false;
+    }
+    return true;
+  });
+  if (selected.length === 0) {
+    throw new Error('no push workflow for develop');
+  }
+  return selected.map((name) => `${relative}/${name}`);
+}
+
+function changedFileList(workspace: string, baseSha: string, headSha: string): string {
+  return execFileSync('git', ['diff', '--name-only', `${baseSha}...${headSha}`], {
+    cwd: workspace,
+    encoding: 'utf8',
+    env: { ...process.env, GIT_TERMINAL_PROMPT: '0' },
+  })
+    .trim()
+    .split('\n')
+    .filter(Boolean)
+    .join(',');
+}
+
 function selectedWorkflows(input: Parameters<WorkflowRunner['run']>[0]) {
+  if (input.target === 'develop-gate') {
+    return selectPushWorkflows(input.workspace);
+  }
   if (input.target === 'smoke') {
     const file = '.local-ci/workflows/develop-smoke.yml';
     if (!existsSync(join(input.workspace, file))) {
@@ -543,6 +597,9 @@ export class ActWorkflowRunner implements WorkflowRunner {
     input.onWorkflows?.(selected);
     const base = input.target === 'main' ? 'main' : 'develop';
     const head = input.ref.replace(/^refs\/heads\//, '');
+    const pushEvent = input.target === 'smoke' || input.target === 'develop-gate';
+    const changedFiles =
+      input.target === 'develop' ? changedFileList(input.workspace, input.baseSha, input.headSha) : undefined;
     // act copies this disposable checkout into the job container. Its origin URL is a
     // host path, so prepare the ratchet ref here instead of fetching inside the job.
     execFileSync(
@@ -558,7 +615,7 @@ export class ActWorkflowRunner implements WorkflowRunner {
     writeFileSync(
       eventPath,
       JSON.stringify(
-        input.target === 'smoke'
+        pushEvent
           ? {
               ref: 'refs/heads/develop',
               before: input.baseSha,
@@ -582,7 +639,14 @@ export class ActWorkflowRunner implements WorkflowRunner {
     );
     const artifacts = join(dirname(input.workspace), 'artifacts', input.runId);
     mkdirSync(artifacts, { recursive: true });
-    input.log(`Pull request ${head} -> ${base}; candidate ${input.sha}; workflows: ${selected.join(', ')}`);
+    input.log(
+      pushEvent
+        ? `Develop suite candidate ${input.sha}; workflows: ${selected.join(', ')}`
+        : `Pull request ${head} -> ${base}; candidate ${input.sha}; workflows: ${selected.join(', ')}`,
+    );
+    if (changedFiles !== undefined) {
+      input.log(`Affected paths: ${changedFiles === '' ? '(none)' : changedFiles}`);
+    }
     const pathValue = actContainerPath(actImagePath());
     let ghBinary: string | null = null;
     let envFile: string | null = null;
@@ -598,7 +662,12 @@ export class ActWorkflowRunner implements WorkflowRunner {
         const projectEnv = join(input.workspace, '.env');
         writeFileSync(
           envFile,
-          actEnvContents(pathValue, token, existsSync(projectEnv) ? readFileSync(projectEnv, 'utf8') : ''),
+          actEnvContents(
+            pathValue,
+            token,
+            existsSync(projectEnv) ? readFileSync(projectEnv, 'utf8') : '',
+            changedFiles,
+          ),
           { mode: 0o600 },
         );
         input.log('mounted linux gh into job containers');
@@ -624,7 +693,7 @@ export class ActWorkflowRunner implements WorkflowRunner {
         }
         const artifactPort = await ephemeralPort();
         const args = [
-          input.target === 'smoke' ? 'push' : 'pull_request',
+          pushEvent ? 'push' : 'pull_request',
           '-C',
           input.workspace,
           '-W',

@@ -66,10 +66,14 @@ export function parseActSteps(lines: string[]): ActStep[] {
     const jobEnded = JOB_END.exec(rest);
     if (jobEnded) {
       if (jobEnded[1] === 'failed') {
-        for (const step of steps) {
-          if (step.job === job && step.status === 'running') {
+        const openSteps = steps.filter((step) => step.job === job && step.status === 'running');
+        if (openSteps.length > 0) {
+          for (const step of openSteps) {
             step.status = 'failed';
           }
+        } else {
+          const failed = open(job, 'Job failed');
+          failed.status = 'failed';
         }
       }
       continue;

@@ -68,7 +68,7 @@ export async function snapshotFor(repository: NonNullable<ReturnType<typeof getR
     const mainRun = runs.find(
       (run) =>
         run.target === 'main' &&
-        run.status === 'passed' &&
+        (run.status === 'passed' || run.status === 'ready') &&
         run.baseSha === snapshot.branches.find((item) => item.name === 'main')?.sha &&
         run.headSha === snapshot.develop,
     );

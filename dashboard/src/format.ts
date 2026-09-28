@@ -63,13 +63,6 @@ export function kindLabel(kind: RunKind): string {
   }
 }
 
-export function machineLoad(now: number, busy: boolean): { cpu: number; ramGb: number } {
-  const wave = Math.sin(now / 700) * 0.5 + Math.sin(now / 1700) * 0.5;
-  const cpu = Math.round(Math.min(94, Math.max(4, (busy ? 64 : 8) + wave * (busy ? 16 : 3))));
-  const ramGb = Number(((busy ? 6.9 : 1.5) + wave * (busy ? 0.45 : 0.08)).toFixed(1));
-  return { cpu, ramGb };
-}
-
 export function mixSha(a: string, b: string): string {
   let out = '';
   for (let i = 0; i < 40; i += 1) {

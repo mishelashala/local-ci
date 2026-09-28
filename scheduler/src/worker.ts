@@ -13,7 +13,13 @@ import {
   registerWorkflows,
   startWorkflow,
 } from './db.ts';
-import { completeSmoke, integrate, maintainIntegrationQueue, withRepositoryLock } from './integration.ts';
+import {
+  completeDevelopGate,
+  completeSmoke,
+  integrate,
+  maintainIntegrationQueue,
+  withRepositoryLock,
+} from './integration.ts';
 import { workRoot } from './paths.ts';
 import { ActWorkflowRunner, runTimeoutMs } from './workflow-runner.ts';
 
@@ -107,7 +113,7 @@ async function execute(run: ClaimedRun) {
       sha: run.candidateSha,
       headSha: run.headSha!,
       baseSha: run.baseSha!,
-      target: (run.target ?? 'develop') as 'develop' | 'main' | 'reconcile' | 'post-merge' | 'smoke',
+      target: (run.target ?? 'develop') as 'develop' | 'main' | 'reconcile' | 'post-merge' | 'smoke' | 'develop-gate',
       runId: run.id,
       signal: controller.signal,
       log: (line, workflow) => appendLog(run.id, line, workflow),
@@ -132,6 +138,9 @@ async function execute(run: ClaimedRun) {
         appendLog(run.id, `integration deferred: ${String(error)}`);
       }
     }
+    if (run.target === 'develop-gate') {
+      await completeDevelopGate(run.id, status);
+    }
     if (run.target === 'smoke') {
       await completeSmoke(run.id, status);
     }
@@ -148,25 +157,28 @@ async function execute(run: ClaimedRun) {
 }
 
 export function startWorker() {
-  let busy = false;
+  let ticking = false;
   const tick = async () => {
-    if (busy) {
+    if (ticking) {
       return;
     }
-    busy = true;
+    ticking = true;
     try {
       await maintainIntegrationQueue();
     } catch (error) {
       console.error('queue maintenance failed', error);
     }
-    const run = claimNextRunGlobal();
-    if (!run) {
-      busy = false;
-      return;
+    try {
+      for (;;) {
+        const run = claimNextRunGlobal();
+        if (!run) {
+          break;
+        }
+        void execute(run);
+      }
+    } finally {
+      ticking = false;
     }
-    void execute(run).finally(() => {
-      busy = false;
-    });
   };
   setInterval(() => void tick(), 1000);
   void tick();

@@ -23,9 +23,11 @@ import { registerRunLogsRoute } from './run-logs.ts';
 import { registerRunResultRoute } from './run-result.ts';
 import { registerRunWorkflowsRoute } from './run-workflows.ts';
 import { registerSyncRoute } from './sync.ts';
+import { registerUsageRoute } from './usage.ts';
 
 export function registerRoutes(app: FastifyInstance) {
   registerHealthRoute(app);
+  registerUsageRoute(app);
   registerListRepositoriesRoute(app);
   registerRepoRoute(app);
   registerListRunsRoute(app);

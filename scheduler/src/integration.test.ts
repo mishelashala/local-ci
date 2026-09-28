@@ -148,6 +148,107 @@ test('serial candidates retest against the moved base and a freeze defers integr
     await completeSmoke(smokeRun.id, 'passed');
     assert.throws(() => sha('refs/heads/feat/smoke'));
     assert.equal(sha('refs/heads/develop'), smokeMerge.sha);
+
+    const { completeDevelopGate } = await import('./integration.ts');
+    const github = join(root, 'github.git');
+    git('init', '--bare', '-b', 'develop', github);
+    git(`--git-dir=${bare}`, 'remote', 'add', 'origin', github);
+    git(`--git-dir=${bare}`, 'push', 'origin', 'refs/heads/develop:refs/heads/develop');
+    const gateWork = join(root, 'gate-work');
+    git('clone', bare, gateWork);
+    git('-C', gateWork, 'config', 'user.name', 'CI test');
+    git('-C', gateWork, 'config', 'user.email', 'ci@example.test');
+    git('-C', gateWork, 'checkout', '-b', 'feat/land');
+    mkdirSync(join(gateWork, '.local-ci', 'workflows'), { recursive: true });
+    writeFileSync(
+      join(gateWork, '.local-ci', 'workflows', 'develop-tests.yml'),
+      'on:\n  push:\n    branches: [develop]\njobs:\n  full:\n    runs-on: ubuntu-latest\n    steps:\n      - run: echo ok\n',
+    );
+    git('-C', gateWork, 'add', '.');
+    git('-C', gateWork, 'commit', '-m', 'feat/land');
+    git('-C', gateWork, 'push', 'origin', 'HEAD:feat/land');
+    const landHead = sha('refs/heads/feat/land');
+    const landBase = sha('refs/heads/develop');
+    const landMerge = await createTemporaryMerge({
+      bareRepo: bare,
+      baseSha: landBase,
+      headSha: landHead,
+      message: mergeBranchMessage('feat/land', 'develop'),
+    });
+    assert.ok('sha' in landMerge);
+    retainCandidate(bare, landMerge.sha);
+    const landRun = db.recordCandidate({
+      repository: 'test',
+      ref: 'refs/heads/feat/land',
+      oldSha: landBase,
+      newSha: landMerge.sha,
+      baseSha: landBase,
+      headSha: landHead,
+      candidateSha: landMerge.sha,
+      status: 'queued',
+    });
+    db.finishRun(landRun.id, 'passed', 0);
+    await integrate(landRun.id);
+    assert.equal(sha('refs/heads/develop'), landBase);
+    assert.equal(sha('refs/heads/feat/land'), landHead);
+    assert.equal(db.integrationControl('test')?.mode, 'frozen');
+    const landGate = db
+      .listRunsForRepository('test')
+      .find((run) => run.target === 'develop-gate' && run.candidateSha === landMerge.sha);
+    assert.ok(landGate);
+    db.finishRun(landGate.id, 'passed', 0);
+    await completeDevelopGate(landGate.id, 'passed');
+    assert.equal(sha('refs/heads/develop'), landMerge.sha);
+    assert.equal(git('--git-dir', github, 'rev-parse', 'refs/heads/develop'), landMerge.sha);
+    assert.throws(() => sha('refs/heads/feat/land'));
+    assert.equal(db.getRun(landRun.id)?.integratedAt !== null, true);
+    assert.equal(db.integrationControl('test'), undefined);
+
+    git('-C', gateWork, 'fetch', 'origin', 'develop');
+    git('-C', gateWork, 'checkout', '-B', 'feat/ahead', 'origin/develop');
+    writeFileSync(join(gateWork, 'ahead.txt'), 'ahead');
+    git('-C', gateWork, 'add', '.');
+    git('-C', gateWork, 'commit', '-m', 'feat/ahead');
+    git('-C', gateWork, 'push', 'origin', 'HEAD:feat/ahead');
+    const aheadHead = sha('refs/heads/feat/ahead');
+    const aheadBase = sha('refs/heads/develop');
+    const aheadMerge = await createTemporaryMerge({
+      bareRepo: bare,
+      baseSha: aheadBase,
+      headSha: aheadHead,
+      message: mergeBranchMessage('feat/ahead', 'develop'),
+    });
+    assert.ok('sha' in aheadMerge);
+    retainCandidate(bare, aheadMerge.sha);
+    const aheadRun = db.recordCandidate({
+      repository: 'test',
+      ref: 'refs/heads/feat/ahead',
+      oldSha: aheadBase,
+      newSha: aheadMerge.sha,
+      baseSha: aheadBase,
+      headSha: aheadHead,
+      candidateSha: aheadMerge.sha,
+      status: 'queued',
+    });
+    db.finishRun(aheadRun.id, 'passed', 0);
+    await integrate(aheadRun.id);
+    const aheadGate = db
+      .listRunsForRepository('test')
+      .find((run) => run.target === 'develop-gate' && run.candidateSha === aheadMerge.sha);
+    assert.ok(aheadGate);
+    const githubWork = join(root, 'github-work');
+    git('clone', github, githubWork);
+    git('-C', githubWork, 'config', 'user.name', 'CI test');
+    git('-C', githubWork, 'config', 'user.email', 'ci@example.test');
+    writeFileSync(join(githubWork, 'github.txt'), 'moved');
+    git('-C', githubWork, 'add', '.');
+    git('-C', githubWork, 'commit', '-m', 'github moved');
+    git('-C', githubWork, 'push', 'origin', 'HEAD:develop');
+    db.finishRun(aheadGate.id, 'passed', 0);
+    await completeDevelopGate(aheadGate.id, 'passed');
+    assert.equal(sha('refs/heads/develop'), aheadBase);
+    assert.equal(sha('refs/heads/feat/ahead'), aheadHead);
+    assert.equal(db.integrationControl('test'), undefined);
   } finally {
     rmSync(root, { recursive: true, force: true });
   }

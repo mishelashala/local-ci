@@ -27,7 +27,7 @@ export function registerMainRoute(app: FastifyInstance) {
       if (!frozenSha) {
         return reply.code(409).send({ error: 'develop is missing' });
       }
-      setIntegrationControl(repository.id, 'frozen', frozenSha, 'Validating develop for promotion');
+      setIntegrationControl(repository.id, 'frozen', frozenSha, 'Ready to push develop → main');
       const repoPath = repository.barePath;
       try {
         const develop = await synchronizeDevelop(repoPath, true);
@@ -79,7 +79,8 @@ export function registerMainRoute(app: FastifyInstance) {
         headSha: developSha,
         candidateSha: sha,
         target: 'main',
-        status: 'queued',
+        status: 'ready',
+        logLine: 'Local CI skipped this suite. GitHub runs the develop → main tests after the push.',
       });
       return reply.code(201).send({ run });
     });

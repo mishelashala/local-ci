@@ -41,13 +41,25 @@ export function LiveLog({ runId }: { runId: string }) {
   const [error, setError] = useState(false);
   const scroller = useRef<HTMLDivElement>(null);
   const seen = useRef(0);
-  const [openStep, setOpenStep] = useState<string | null>(null);
-  const pickedStep = useRef(false);
+  const [openSteps, setOpenSteps] = useState<string[]>([]);
+  const [openJobs, setOpenJobs] = useState<string[]>([]);
+  const pinnedSteps = useRef(new Set<string>());
+  const closedSteps = useRef(new Set<string>());
+  const seenRunningSteps = useRef(new Set<string>());
+  const pinnedJobs = useRef(new Set<string>());
+  const closedJobs = useRef(new Set<string>());
+  const seenRunningJobs = useRef(new Set<string>());
 
   useEffect(() => {
     setSelectedWorkflow(null);
-    setOpenStep(null);
-    pickedStep.current = false;
+    setOpenSteps([]);
+    setOpenJobs([]);
+    pinnedSteps.current.clear();
+    closedSteps.current.clear();
+    seenRunningSteps.current.clear();
+    pinnedJobs.current.clear();
+    closedJobs.current.clear();
+    seenRunningJobs.current.clear();
   }, [runId]);
 
   useEffect(() => {
@@ -107,12 +119,39 @@ export function LiveLog({ runId }: { runId: string }) {
   const jobs = groupSteps(steps);
 
   useEffect(() => {
-    if (pickedStep.current) {
-      return;
+    for (const step of steps) {
+      if (step.status === 'running') {
+        seenRunningSteps.current.add(step.id);
+      } else if (seenRunningSteps.current.has(step.id)) {
+        seenRunningSteps.current.delete(step.id);
+        pinnedSteps.current.delete(step.id);
+        closedSteps.current.delete(step.id);
+      }
     }
-    const running = steps.find((step) => step.status === 'running');
-    const failed = [...steps].reverse().find((step) => step.status === 'failed');
-    setOpenStep(running?.id ?? failed?.id ?? steps.at(-1)?.id ?? null);
+    const nextSteps = new Set(pinnedSteps.current);
+    for (const step of steps) {
+      if (step.status === 'running' && !closedSteps.current.has(step.id)) {
+        nextSteps.add(step.id);
+      }
+    }
+    setOpenSteps([...nextSteps]);
+
+    for (const job of jobs) {
+      if (job.status === 'running') {
+        seenRunningJobs.current.add(job.job);
+      } else if (seenRunningJobs.current.has(job.job)) {
+        seenRunningJobs.current.delete(job.job);
+        pinnedJobs.current.delete(job.job);
+        closedJobs.current.delete(job.job);
+      }
+    }
+    const nextJobs = new Set(pinnedJobs.current);
+    for (const job of jobs) {
+      if (job.status === 'running' && !closedJobs.current.has(job.job)) {
+        nextJobs.add(job.job);
+      }
+    }
+    setOpenJobs([...nextJobs]);
   }, [lines]);
 
   useEffect(() => {
@@ -125,7 +164,7 @@ export function LiveLog({ runId }: { runId: string }) {
       return;
     }
     el.scrollTop = el.scrollHeight;
-  }, [lines, openStep]);
+  }, [lines, openSteps]);
 
   return (
     <Panel
@@ -225,88 +264,117 @@ export function LiveLog({ runId }: { runId: string }) {
                 </Box>
               )}
               {jobs.map((job) => (
-                <Box key={job.job}>
-                  <Box
+                <Accordion
+                  key={job.job}
+                  disableGutters
+                  elevation={0}
+                  expanded={openJobs.includes(job.job)}
+                  onChange={(_event, expanded) => {
+                    if (expanded) {
+                      pinnedJobs.current.add(job.job);
+                      closedJobs.current.delete(job.job);
+                      setOpenJobs((names) => (names.includes(job.job) ? names : [...names, job.job]));
+                    } else {
+                      pinnedJobs.current.delete(job.job);
+                      closedJobs.current.add(job.job);
+                      setOpenJobs((names) => names.filter((name) => name !== job.job));
+                    }
+                  }}
+                  sx={{
+                    '&:before': { display: 'none' },
+                    borderBottom: '1px solid',
+                    borderColor: 'divider',
+                    bgcolor: 'transparent',
+                  }}
+                >
+                  <AccordionSummary
                     sx={{
-                      display: 'flex',
-                      alignItems: 'center',
-                      gap: 1,
+                      minHeight: 36,
                       px: 1.5,
-                      py: 0.75,
-                      borderBottom: '1px solid',
-                      borderColor: 'divider',
                       bgcolor: 'action.hover',
+                      '& .MuiAccordionSummary-content': { my: 0.5, alignItems: 'center', gap: 1 },
                     }}
                   >
                     <StatusChip status={job.status} />
-                    <Typography sx={{ fontSize: 13, fontWeight: 600 }} noWrap>
+                    <Typography sx={{ fontSize: 13, fontWeight: 600, flex: 1 }} noWrap>
                       {job.job}
                     </Typography>
-                  </Box>
-                  {job.steps.map((step) => (
-                    <Accordion
-                      key={step.id}
-                      disableGutters
-                      elevation={0}
-                      expanded={openStep === step.id}
-                      onChange={(_event, expanded) => {
-                        pickedStep.current = true;
-                        setOpenStep(expanded ? step.id : null);
-                      }}
-                      sx={{
-                        '&:before': { display: 'none' },
-                        borderBottom: '1px solid',
-                        borderColor: 'divider',
-                        bgcolor: 'transparent',
-                      }}
-                    >
-                      <AccordionSummary
+                  </AccordionSummary>
+                  <AccordionDetails sx={{ p: 0 }}>
+                    {job.steps.map((step) => (
+                      <Accordion
+                        key={step.id}
+                        disableGutters
+                        elevation={0}
+                        onClick={(event) => event.stopPropagation()}
+                        expanded={openSteps.includes(step.id)}
+                        onChange={(_event, expanded) => {
+                          if (expanded) {
+                            pinnedSteps.current.add(step.id);
+                            closedSteps.current.delete(step.id);
+                            setOpenSteps((ids) => (ids.includes(step.id) ? ids : [...ids, step.id]));
+                          } else {
+                            pinnedSteps.current.delete(step.id);
+                            closedSteps.current.add(step.id);
+                            setOpenSteps((ids) => ids.filter((id) => id !== step.id));
+                          }
+                        }}
                         sx={{
-                          minHeight: 36,
-                          px: 1.5,
-                          '& .MuiAccordionSummary-content': { my: 0.5, alignItems: 'center', gap: 1 },
+                          '&:before': { display: 'none' },
+                          borderBottom: '1px solid',
+                          borderColor: 'divider',
+                          bgcolor: 'transparent',
+                          ml: 2,
                         }}
                       >
-                        <StatusChip status={step.status} />
-                        <Typography sx={{ fontSize: 13, flex: 1 }} noWrap>
-                          {step.name}
-                        </Typography>
-                        {step.duration && (
-                          <Typography
-                            variant="caption"
-                            color="text.secondary"
-                            sx={{ fontVariantNumeric: 'tabular-nums' }}
-                          >
-                            {step.duration}
+                        <AccordionSummary
+                          sx={{
+                            minHeight: 36,
+                            px: 1.5,
+                            '& .MuiAccordionSummary-content': { my: 0.5, alignItems: 'center', gap: 1 },
+                          }}
+                        >
+                          <StatusChip status={step.status} />
+                          <Typography sx={{ fontSize: 13, flex: 1 }} noWrap>
+                            {step.name}
                           </Typography>
-                        )}
-                      </AccordionSummary>
-                      <AccordionDetails
-                        ref={openStep === step.id ? scroller : undefined}
-                        sx={{
-                          px: 1.5,
-                          py: 1,
-                          fontFamily: mono,
-                          fontSize: 12.5,
-                          lineHeight: 1.55,
-                          maxHeight: 360,
-                          overflow: 'auto',
-                        }}
-                      >
-                        {step.lines.length === 0 && (
-                          <Typography variant="caption" color="text.secondary">
-                            No output yet.
-                          </Typography>
-                        )}
-                        {step.lines.map((line, index) => (
-                          <Box key={`${step.id}-${index}`} sx={{ overflowWrap: 'anywhere', whiteSpace: 'pre-wrap' }}>
-                            <AnsiText text={line.replace(/^\[[^\]]+\]\s?/, '')} />
-                          </Box>
-                        ))}
-                      </AccordionDetails>
-                    </Accordion>
-                  ))}
-                </Box>
+                          {step.duration && (
+                            <Typography
+                              variant="caption"
+                              color="text.secondary"
+                              sx={{ fontVariantNumeric: 'tabular-nums' }}
+                            >
+                              {step.duration}
+                            </Typography>
+                          )}
+                        </AccordionSummary>
+                        <AccordionDetails
+                          ref={step.status === 'running' ? scroller : undefined}
+                          sx={{
+                            px: 1.5,
+                            py: 1,
+                            fontFamily: mono,
+                            fontSize: 12.5,
+                            lineHeight: 1.55,
+                            maxHeight: 360,
+                            overflow: 'auto',
+                          }}
+                        >
+                          {step.lines.length === 0 && (
+                            <Typography variant="caption" color="text.secondary">
+                              No output yet.
+                            </Typography>
+                          )}
+                          {step.lines.map((line, index) => (
+                            <Box key={`${step.id}-${index}`} sx={{ overflowWrap: 'anywhere', whiteSpace: 'pre-wrap' }}>
+                              <AnsiText text={line.replace(/^\[[^\]]+\]\s?/, '')} />
+                            </Box>
+                          ))}
+                        </AccordionDetails>
+                      </Accordion>
+                    ))}
+                  </AccordionDetails>
+                </Accordion>
               ))}
             </Box>
           </>

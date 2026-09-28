@@ -1,4 +1,4 @@
-import { Box, Button, Chip, MenuItem, Select, Skeleton, Typography } from '@mui/material';
+import { Box, Button, Chip, Skeleton, Typography } from '@mui/material';
 import { type ComponentProps, useEffect, useRef, useState } from 'react';
 import { useColorMode } from '../color-mode';
 import { formatAgo, mono, shortSha } from '../format';
@@ -54,24 +54,6 @@ type RunInput = Omit<
 };
 
 const ZERO = '0000000000000000000000000000000000000000';
-
-function repositoryQuery(): string {
-  return new URLSearchParams(window.location.search).get('repository') ?? '';
-}
-
-function setRepositoryQuery(id: string) {
-  const url = new URL(window.location.href);
-  if (id) {
-    url.searchParams.set('repository', id);
-  } else {
-    url.searchParams.delete('repository');
-  }
-  const next = `${url.pathname}${url.search}${url.hash}`;
-  const current = `${window.location.pathname}${window.location.search}${window.location.hash}`;
-  if (next !== current) {
-    window.history.replaceState(null, '', next);
-  }
-}
 
 function normalize(run: RunInput): Run {
   return {
@@ -185,38 +167,49 @@ export function Board() {
   const notify = useToast();
   const [runs, setRuns] = useState<Run[]>([]);
   const [runsReady, setRunsReady] = useState(false);
-  const [repo, setRepo] = useState<RepoSnapshot | null>(null);
   const [repositories, setRepositories] = useState<RepoSnapshot[]>([]);
-  const [selectedRepositoryId, setSelectedRepositoryId] = useState(repositoryQuery);
   const [showSetup, setShowSetup] = useState(false);
   const [showRepositories, setShowRepositories] = useState(false);
-  const [showConnect, setShowConnect] = useState(false);
+  const [connectRepo, setConnectRepo] = useState<RepoSnapshot | null>(null);
   const [repoReady, setRepoReady] = useState(false);
   const [offline, setOffline] = useState(false);
   const [selectedId, setSelectedId] = useState<string | null>(null);
   const [now, setNow] = useState(() => Date.now());
   const [busy, setBusy] = useState<string | null>(null);
+  const [queueOpen, setQueueOpen] = useState(false);
+  const [branchesOpen, setBranchesOpen] = useState(true);
+  const [historyOpen, setHistoryOpen] = useState(true);
+  const [usage, setUsage] = useState<{ cpu: number | null; ramUsedGb: number; ramTotalGb: number } | null>(null);
+  const queueTouched = useRef(false);
   const busyLock = useRef<string | null>(null);
-  const activeIdRef = useRef(selectedRepositoryId);
+  const repositoryIdsRef = useRef<string[]>([]);
 
-  async function refreshRuns(repositoryId: string) {
-    const response = await fetch(`/api/runs?repository=${encodeURIComponent(repositoryId)}`);
-    if (!response.ok || activeIdRef.current !== repositoryId) {
+  async function refreshRuns(repositoryIds: string[]) {
+    if (repositoryIds.length === 0) {
       return;
     }
-    const body = (await response.json()) as { runs?: RunInput[] };
-    if (!Array.isArray(body.runs) || activeIdRef.current !== repositoryId) {
-      return;
-    }
-    setRuns(body.runs.map(normalize));
+    const batches = await Promise.all(
+      repositoryIds.map(async (id) => {
+        const response = await fetch(`/api/runs?repository=${encodeURIComponent(id)}`);
+        if (!response.ok) {
+          throw new Error(String(response.status));
+        }
+        const body = (await response.json()) as { runs?: RunInput[] };
+        if (!Array.isArray(body.runs)) {
+          throw new Error('runs');
+        }
+        return body.runs.map(normalize);
+      }),
+    );
+    setRuns(batches.flat().sort((a, b) => b.createdAt - a.createdAt));
     setRunsReady(true);
     setOffline(false);
     setNow(Date.now());
   }
 
-  async function refreshBoard(repositoryId: string) {
+  async function refreshBoard() {
     const reposResponse = await fetch('/api/repositories');
-    if (reposResponse.ok && activeIdRef.current === repositoryId) {
+    if (reposResponse.ok) {
       const body = (await reposResponse.json()) as { repositories?: RepoSnapshot[] };
       if (Array.isArray(body.repositories)) {
         const snapshots = body.repositories.map(normalizeRepo);
@@ -228,13 +221,9 @@ export function Board() {
             ),
           ),
         );
-        setRepo((current) => {
-          const next = snapshots.find((item) => item.id === repositoryId);
-          return next ? keepGitHub(current ?? undefined, next) : current;
-        });
       }
     }
-    await refreshRuns(repositoryId);
+    await refreshRuns(repositoryIdsRef.current);
   }
 
   async function runAction(
@@ -249,29 +238,26 @@ export function Board() {
     }
     busyLock.current = key;
     setBusy(key);
-    const repositoryId = activeIdRef.current;
+    const sent =
+      payload !== null && typeof payload === 'object' ? (payload as { repository?: string; branch?: string }) : {};
+    const repositoryId = typeof sent.repository === 'string' ? sent.repository : '';
     try {
       const result = await postJson(path, payload);
       if (result.ok && path === '/api/sync' && typeof result.body.id === 'string') {
         const saved = normalizeRepo(result.body as RepoSnapshot);
         setRepositories((items) => items.map((item) => (item.id === saved.id ? saved : item)));
-        if (activeIdRef.current === saved.id) {
-          setRepo(saved);
-        }
       }
-      if (result.ok && path === '/api/pushes' && typeof result.body.sha === 'string') {
-        const sent = payload as { branch?: string };
-        if (sent.branch === 'develop') {
-          const sha = result.body.sha;
-          const mark = (item: RepoSnapshot): RepoSnapshot =>
+      if (result.ok && path === '/api/pushes' && typeof result.body.sha === 'string' && sent.branch === 'develop') {
+        const sha = result.body.sha;
+        setRepositories((items) =>
+          items.map((item) =>
             item.id === repositoryId
               ? { ...item, develop: sha, githubDevelop: { local: sha, github: sha, relation: 'same' } }
-              : item;
-          setRepositories((items) => items.map(mark));
-          setRepo((current) => (current ? mark(current) : current));
-        }
+              : item,
+          ),
+        );
       }
-      await refreshBoard(repositoryId);
+      await refreshBoard();
       if (result.ok) {
         notify('success', typeof success === 'function' ? success(result.body) : success);
       } else {
@@ -299,29 +285,31 @@ export function Board() {
         }
         const snapshots = Array.isArray(body.repositories) ? body.repositories.map(normalizeRepo) : [];
         setRepositories(snapshots);
-        const active = snapshots.find((item) => item.id === selectedRepositoryId) ?? snapshots[0];
-        if (!active) {
-          setRepo(null);
+        if (snapshots.length === 0) {
           setRepoReady(true);
           setRuns([]);
           setRunsReady(true);
           setOffline(false);
           return;
         }
-        setRepo(active);
         setRepoReady(true);
-        const runsResponse = await fetch(`/api/runs?repository=${encodeURIComponent(active.id)}`);
-        if (!runsResponse.ok) {
-          throw new Error(String(runsResponse.status));
-        }
-        const runsBody = (await runsResponse.json()) as { runs?: RunInput[] };
+        const batches = await Promise.all(
+          snapshots.map(async (item) => {
+            const runsResponse = await fetch(`/api/runs?repository=${encodeURIComponent(item.id)}`);
+            if (!runsResponse.ok) {
+              throw new Error(String(runsResponse.status));
+            }
+            const runsBody = (await runsResponse.json()) as { runs?: RunInput[] };
+            if (!Array.isArray(runsBody.runs)) {
+              throw new Error('runs');
+            }
+            return runsBody.runs.map(normalize);
+          }),
+        );
         if (cancel) {
           return;
         }
-        if (!Array.isArray(runsBody.runs)) {
-          throw new Error('runs');
-        }
-        setRuns(runsBody.runs.map(normalize));
+        setRuns(batches.flat().sort((a, b) => b.createdAt - a.createdAt));
         setOffline(false);
         setRunsReady(true);
         setNow(Date.now());
@@ -335,7 +323,6 @@ export function Board() {
         }
         const refreshed = syncedBody.repositories.map(normalizeRepo);
         setRepositories(refreshed);
-        setRepo(refreshed.find((item) => item.id === active.id) ?? refreshed[0] ?? null);
       } catch {
         if (!cancel) {
           setOffline(true);
@@ -346,18 +333,7 @@ export function Board() {
     return () => {
       cancel = true;
     };
-  }, [selectedRepositoryId]);
-
-  useEffect(() => {
-    const onPop = () => setSelectedRepositoryId(repositoryQuery());
-    window.addEventListener('popstate', onPop);
-    return () => window.removeEventListener('popstate', onPop);
   }, []);
-
-  function selectRepository(id: string) {
-    setSelectedRepositoryId(id);
-    setRepositoryQuery(id);
-  }
 
   useEffect(() => {
     if (selectedId && runs.some((run) => run.id === selectedId)) {
@@ -367,45 +343,69 @@ export function Board() {
     setSelectedId(running?.id ?? runs[0]?.id ?? null);
   }, [runs, selectedId]);
 
-  const activeRepositoryId =
-    repositories.find((item) => item.id === selectedRepositoryId)?.id ?? repositories[0]?.id ?? '';
-  activeIdRef.current = activeRepositoryId;
+  repositoryIdsRef.current = repositories.map((item) => item.id);
 
   useEffect(() => {
-    if (!repoReady) {
-      return;
-    }
-    setRepositoryQuery(activeRepositoryId);
-  }, [repoReady, activeRepositoryId]);
+    let cancel = false;
+    const tick = async () => {
+      try {
+        const response = await fetch('/api/usage');
+        if (!response.ok) {
+          return;
+        }
+        const body = (await response.json()) as { cpu?: number | null; ramUsedGb?: number; ramTotalGb?: number };
+        if (cancel || typeof body.ramUsedGb !== 'number' || typeof body.ramTotalGb !== 'number') {
+          return;
+        }
+        setUsage({
+          cpu: typeof body.cpu === 'number' ? body.cpu : null,
+          ramUsedGb: body.ramUsedGb,
+          ramTotalGb: body.ramTotalGb,
+        });
+      } catch {
+        if (!cancel) {
+          setUsage(null);
+        }
+      }
+    };
+    void tick();
+    const id = window.setInterval(() => void tick(), 2000);
+    return () => {
+      cancel = true;
+      window.clearInterval(id);
+    };
+  }, []);
 
   const live = runs.some((run) => run.status === 'queued' || run.status === 'running');
   const wasLive = useRef(false);
   useEffect(() => {
-    if (!runsReady || !activeRepositoryId) {
+    if (!runsReady || repositories.length === 0) {
       return;
     }
     const stopped = wasLive.current && !live;
     wasLive.current = live;
     if (stopped) {
-      void refreshBoard(activeRepositoryId);
+      void refreshBoard();
     }
     if (!live) {
       return;
     }
     const id = window.setInterval(() => {
-      void refreshRuns(activeRepositoryId);
+      void refreshRuns(repositoryIdsRef.current);
     }, 2000);
     return () => window.clearInterval(id);
-  }, [live, runsReady, activeRepositoryId]);
+  }, [live, runsReady, repositories.length]);
 
-  const running = runs.find((run) => run.status === 'running');
+  const runningRuns = runs.filter((run) => run.status === 'running');
   const queued = runs.filter((run) => run.status === 'queued');
   const history = runs.filter((run) => run.status !== 'queued' && run.status !== 'running');
+
+  useEffect(() => {
+    if (!queueTouched.current) {
+      setQueueOpen(queued.length > 0);
+    }
+  }, [queued.length]);
   const selected = runs.find((run) => run.id === selectedId) ?? null;
-  const developSha = pushDevelopSha(runs, repo);
-  const githubMainSha = pushMainSha(runs, repo);
-  const canOpenMain = mainSha(repo) !== null && repo?.develop != null && !repo?.integration;
-  const mainBusy = runs.some((run) => run.target === 'main' && (run.status === 'queued' || run.status === 'running'));
 
   const summary = (run: Run) => (
     <RunSummary
@@ -414,6 +414,7 @@ export function Board() {
       now={now}
       selected={selected?.id === run.id}
       onSelect={() => setSelectedId(run.id)}
+      repositoryName={repositories.find((item) => item.id === run.repository)?.name ?? 'repository'}
       showMerge={false}
       busy={busy}
       onMerge={() => void runAction(`merge:${run.id}`, '/api/merges', { runId: run.id }, 'Merge', 'Merge finished')}
@@ -445,28 +446,13 @@ export function Board() {
     return (
       <Repositories
         repositories={repositories}
-        activeId={activeRepositoryId}
-        onOpen={(id) => {
-          selectRepository(id);
-          setRuns([]);
-          setSelectedId(null);
-          setShowRepositories(false);
-        }}
         onAdd={() => {
           setShowRepositories(false);
           setShowSetup(true);
         }}
         onRemoved={(id) => {
-          const remaining = repositories.filter((item) => item.id !== id);
-          setRepositories(remaining);
-          if (activeRepositoryId === id) {
-            const next = remaining[0];
-            selectRepository(next?.id ?? '');
-            setRepo(next ?? null);
-            setRuns([]);
-            setSelectedId(null);
-            setRunsReady(!next);
-          }
+          setRepositories((items) => items.filter((item) => item.id !== id));
+          setRuns((items) => items.filter((run) => run.repository !== id));
         }}
         onClose={() => setShowRepositories(false)}
       />
@@ -479,9 +465,7 @@ export function Board() {
         onCancel={repositories.length ? () => setShowSetup(false) : undefined}
         onSaved={(snapshot) => {
           const saved = normalizeRepo(snapshot);
-          setRepo(saved);
           setRepositories((items) => [...items.filter((item) => item.id !== saved.id), saved]);
-          selectRepository(saved.id);
           setShowSetup(false);
           notify('success', `Connected ${saved.name}`);
         }}
@@ -494,34 +478,16 @@ export function Board() {
       <Box sx={{ px: 1.5, py: 1.25, borderBottom: '1px solid', borderColor: 'divider' }}>
         <Box sx={{ display: 'flex', alignItems: 'center', flexWrap: 'wrap', gap: 2 }}>
           <Typography sx={{ fontWeight: 600, fontSize: 16 }}>local ci</Typography>
-          {repoReady && repositories.length > 0 && (
-            <Select
-              size="small"
-              value={activeRepositoryId}
-              onChange={(event) => {
-                selectRepository(event.target.value);
-                setRuns([]);
-                setSelectedId(null);
-              }}
-              sx={{ minWidth: 190, height: 32, fontSize: 13 }}
-            >
-              {repositories.map((item) => (
-                <MenuItem key={item.id} value={item.id}>
-                  {item.name}
-                </MenuItem>
-              ))}
-            </Select>
-          )}
-          {repo && (
-            <Button type="button" size="small" variant="outlined" onClick={() => setShowConnect(true)}>
-              Connect
-            </Button>
-          )}
           {!runsReady ? (
             <Skeleton variant="text" width={118} height={16} />
           ) : (
             <Typography variant="caption" color={offline ? 'warning.main' : 'success.main'}>
               {offline ? 'scheduler offline' : 'scheduler online'}
+            </Typography>
+          )}
+          {usage && (
+            <Typography variant="caption" color="text.secondary">
+              {usage.cpu === null ? 'CPU …' : `CPU ${usage.cpu}%`} · RAM {usage.ramUsedGb}/{usage.ramTotalGb} GB
             </Typography>
           )}
           <Box sx={{ flex: 1 }} />
@@ -535,150 +501,6 @@ export function Board() {
               Add repository
             </Button>
           )}
-          {repo && (
-            <ActionButton
-              busyKey="sync"
-              busy={busy}
-              onClick={() =>
-                void runAction('sync', '/api/sync', { repository: repo.id }, 'Sync', 'GitHub sync finished')
-              }
-            >
-              Sync GitHub
-            </ActionButton>
-          )}
-          {repo?.githubDevelop?.relation === 'diverged' && (
-            <ActionButton
-              busyKey="match-develop"
-              busy={busy}
-              color="warning"
-              onClick={() =>
-                void runAction(
-                  'match-develop',
-                  '/api/develop/match',
-                  { repository: repo.id },
-                  'Match GitHub develop',
-                  'Local develop now matches GitHub. No new commit was created.',
-                )
-              }
-            >
-              Match GitHub develop
-            </ActionButton>
-          )}
-          {repo?.githubDevelop?.relation === 'diverged' && (
-            <ActionButton
-              busyKey="reconcile"
-              busy={busy}
-              color="warning"
-              onClick={() =>
-                void runAction(
-                  'reconcile',
-                  '/api/reconcile',
-                  { repository: repo.id },
-                  'Validate reconciliation',
-                  'Reconciliation queued',
-                )
-              }
-            >
-              Validate reconciliation
-            </ActionButton>
-          )}
-          {repo?.pendingReset && (
-            <ActionButton
-              busyKey="reset"
-              busy={busy}
-              color="warning"
-              onClick={() =>
-                void runAction(
-                  'reset',
-                  '/api/reset-develop',
-                  { repository: repo.id },
-                  'Reset develop',
-                  'Develop reset to main',
-                )
-              }
-            >
-              Reset develop to main
-            </ActionButton>
-          )}
-          {repo?.integration?.mode === 'frozen' && (
-            <ActionButton
-              busyKey="promotion"
-              busy={busy}
-              onClick={() =>
-                void runAction(
-                  'promotion',
-                  '/api/promotion/cancel',
-                  { repository: repo.id },
-                  'Release promotion',
-                  'Promotion released',
-                )
-              }
-            >
-              Release promotion
-            </ActionButton>
-          )}
-          {!repoReady && (
-            <>
-              <Skeleton variant="rounded" width={150} height={30} />
-              <Skeleton variant="rounded" width={168} height={30} />
-            </>
-          )}
-          {repoReady && canOpenMain && (
-            <ActionButton
-              busyKey="main"
-              busy={busy}
-              disabled={mainBusy}
-              onClick={() =>
-                void runAction(
-                  'main',
-                  '/api/main',
-                  { repository: activeRepositoryId },
-                  'Validation',
-                  'Validation queued',
-                )
-              }
-            >
-              Validate develop → main
-            </ActionButton>
-          )}
-          {repoReady && githubMainSha && (
-            <ActionButton
-              busyKey="push-main"
-              busy={busy}
-              variant="contained"
-              onClick={() =>
-                void runAction(
-                  'push-main',
-                  '/api/pushes',
-                  { repository: activeRepositoryId, branch: 'main' },
-                  'Push',
-                  (body) => (typeof body.remote === 'string' ? body.remote : 'Pushed main to GitHub'),
-                )
-              }
-            >
-              Push main to GitHub {shortSha(githubMainSha)}
-            </ActionButton>
-          )}
-          {repoReady && developSha && (
-            <ActionButton
-              busyKey="push-develop"
-              busy={busy}
-              variant="contained"
-              disabled={developMatchesGitHub(repo)}
-              title={developMatchesGitHub(repo) ? 'GitHub develop is already this commit' : undefined}
-              onClick={() =>
-                void runAction(
-                  'push-develop',
-                  '/api/pushes',
-                  { repository: activeRepositoryId, branch: 'develop' },
-                  'Push',
-                  (body) => (typeof body.remote === 'string' ? body.remote : 'Pushed develop to GitHub'),
-                )
-              }
-            >
-              Push to develop {shortSha(developSha)}
-            </ActionButton>
-          )}
           <Button type="button" size="small" onClick={toggle} sx={{ minWidth: 0, py: 0, color: 'text.secondary' }}>
             {mode === 'dark' ? 'Light' : 'Dark'}
           </Button>
@@ -686,32 +508,8 @@ export function Board() {
             127.0.0.1
           </Typography>
         </Box>
-        {repo?.syncError && (
-          <Typography variant="caption" color="error.main" sx={{ display: 'block' }}>
-            GitHub sync: {repo.syncError}
-          </Typography>
-        )}
-        {repo?.githubDevelop && (
-          <Typography
-            variant="caption"
-            color={repo.githubDevelop.relation === 'diverged' ? 'error.main' : 'text.secondary'}
-            sx={{ display: 'block' }}
-          >
-            GitHub develop: {repo.githubDevelop.relation} · local {shortSha(repo.githubDevelop.local ?? '')} · GitHub{' '}
-            {shortSha(repo.githubDevelop.github ?? '')}
-          </Typography>
-        )}
-        {repo?.integration && (
-          <Typography
-            variant="caption"
-            color={repo.integration.mode === 'blocked' ? 'error.main' : 'warning.main'}
-            sx={{ display: 'block' }}
-          >
-            Integration {repo.integration.mode}: {repo.integration.reason}. Agent candidates wait for this repository.
-          </Typography>
-        )}
       </Box>
-      <ConnectDialog repo={repo} open={showConnect} onClose={() => setShowConnect(false)} />
+      <ConnectDialog repo={connectRepo} open={connectRepo !== null} onClose={() => setConnectRepo(null)} />
 
       <Box
         sx={{
@@ -726,8 +524,8 @@ export function Board() {
         <Box
           sx={{
             minHeight: 0,
-            display: 'grid',
-            gridTemplateRows: 'auto auto minmax(120px, auto) minmax(0, 1fr)',
+            display: 'flex',
+            flexDirection: 'column',
             gap: 1.25,
           }}
         >
@@ -735,7 +533,7 @@ export function Board() {
             title="Runner"
             action={
               <Typography variant="caption" color="text.secondary">
-                concurrency 1
+                frontend + server
               </Typography>
             }
           >
@@ -747,13 +545,13 @@ export function Board() {
                     Scheduler is not answering on 127.0.0.1:6001.
                   </Typography>
                 )}
-                {!offline && running && summary(running)}
-                {!offline && !running && (
+                {!offline && runningRuns.map(summary)}
+                {!offline && runningRuns.length === 0 && (
                   <>
                     <Typography sx={{ fontWeight: 600 }}>Runner idle</Typography>
                     <Typography variant="caption" color="text.secondary" sx={{ display: 'block' }}>
                       {history[0]
-                        ? `Last run ${history[0].branch} ${history[0].status}`
+                        ? `Last run ${repositories.find((item) => item.id === history[0].repository)?.name ?? 'repository'} ${history[0].branch} ${history[0].status}`
                         : 'No runs yet. git push ci feat/branch-name'}
                     </Typography>
                   </>
@@ -764,6 +562,11 @@ export function Board() {
 
           <Panel
             title="Queue"
+            open={queueOpen}
+            onToggle={() => {
+              queueTouched.current = true;
+              setQueueOpen((open) => !open);
+            }}
             action={
               !runsReady ? (
                 <Skeleton variant="text" width={16} height={14} />
@@ -789,93 +592,304 @@ export function Board() {
           </Panel>
 
           <Panel
-            title="Branches"
+            title="Projects"
+            open={branchesOpen}
+            onToggle={() => setBranchesOpen((open) => !open)}
+            maxHeight={480}
             action={
               <Typography variant="caption" color="text.secondary">
-                {repo?.maxBranchDrift ?? 10} commit drift limit
+                {repositories[0]?.maxBranchDrift ?? 10} commit drift limit
               </Typography>
             }
           >
-            {!repo?.branches.length && (
+            {repositories.length === 0 && (
               <Typography variant="caption" color="text.secondary" sx={{ display: 'block', px: 1.5, py: 1.25 }}>
                 No branches in this CI repository yet.
               </Typography>
             )}
-            {repo?.branches.map((branch) => (
-              <Box
-                key={branch.name}
-                sx={{
-                  px: 1.5,
-                  py: 0.8,
-                  display: 'flex',
-                  alignItems: 'center',
-                  gap: 1,
-                  borderBottom: '1px solid',
-                  borderColor: 'divider',
-                }}
-              >
-                <Typography sx={{ fontSize: 13, fontWeight: 600, flex: 1 }} noWrap>
-                  {branch.name}
-                </Typography>
-                <Typography variant="caption" color="text.secondary" sx={{ fontFamily: mono }}>
-                  <Sha value={branch.sha} />
-                </Typography>
-                {branch.behindDevelop !== null && branch.name !== 'develop' && (
-                  <Typography
-                    variant="caption"
-                    color={branch.behindDevelop > (repo?.maxBranchDrift ?? 10) ? 'error.main' : 'text.secondary'}
-                  >
-                    {branch.behindDevelop} behind
-                  </Typography>
-                )}
-                <Chip
-                  size="small"
-                  label={branch.status.replaceAll('-', ' ')}
-                  color={
-                    branch.status === 'ready-to-merge' || branch.status === 'ready-to-deploy'
-                      ? 'success'
-                      : branch.status === 'failed' || branch.status === 'sync-required'
-                        ? 'error'
-                        : 'default'
-                  }
-                />
-                {branch.name !== 'main' && branch.name !== 'develop' && branch.status !== 'sync-required' && (
-                  <ActionButton
-                    busyKey={`run:${branch.name}`}
-                    busy={busy}
-                    onClick={() =>
-                      void runAction(
-                        `run:${branch.name}`,
-                        '/api/runs/manual',
-                        { repository: repo.id, branch: branch.name },
-                        'Enqueue',
-                        'Run queued',
-                      )
-                    }
-                  >
-                    Run
-                  </ActionButton>
-                )}
-                {branch.status === 'sync-required' && (
-                  <Button
-                    size="small"
-                    variant="outlined"
-                    disabled={busy !== null}
-                    onClick={() =>
-                      notify(
-                        'warning',
-                        `Sync ${branch.name} in your working copy: git fetch ci develop && git rebase ci/develop && git push --force-with-lease ci ${branch.name}`,
-                      )
-                    }
-                  >
-                    Sync/Rebase
-                  </Button>
-                )}
-              </Box>
-            ))}
+            {repositories.map((item) => {
+              const itemRuns = runs.filter((run) => run.repository === item.id);
+              const developSha = pushDevelopSha(itemRuns, item);
+              const githubMainSha = pushMainSha(itemRuns, item);
+              const canOpenMain = mainSha(item) !== null && item.develop != null && !item.integration;
+              const itemMainBusy = itemRuns.some(
+                (run) => run.target === 'main' && (run.status === 'queued' || run.status === 'running'),
+              );
+              return (
+                <Box key={item.id}>
+                  <Box sx={{ px: 1.5, py: 0.75, bgcolor: 'action.hover' }}>
+                    <Typography sx={{ fontSize: 13, fontWeight: 700 }} noWrap>
+                      {item.name}
+                    </Typography>
+                    {item.syncError && (
+                      <Typography variant="caption" color="error.main" sx={{ display: 'block' }}>
+                        GitHub sync: {item.syncError}
+                      </Typography>
+                    )}
+                    {item.githubDevelop && (
+                      <Typography
+                        variant="caption"
+                        color={item.githubDevelop.relation === 'diverged' ? 'error.main' : 'text.secondary'}
+                        sx={{ display: 'block' }}
+                      >
+                        GitHub develop: {item.githubDevelop.relation} · local {shortSha(item.githubDevelop.local ?? '')}{' '}
+                        · GitHub {shortSha(item.githubDevelop.github ?? '')}
+                      </Typography>
+                    )}
+                    {item.integration && (
+                      <Typography
+                        variant="caption"
+                        color={item.integration.mode === 'blocked' ? 'error.main' : 'warning.main'}
+                        sx={{ display: 'block' }}
+                      >
+                        Integration {item.integration.mode}: {item.integration.reason}
+                      </Typography>
+                    )}
+                    <Box sx={{ display: 'flex', flexWrap: 'wrap', gap: 0.75, mt: 0.75 }}>
+                      <Button type="button" size="small" variant="outlined" onClick={() => setConnectRepo(item)}>
+                        Connect
+                      </Button>
+                      <ActionButton
+                        busyKey={`sync:${item.id}`}
+                        busy={busy}
+                        onClick={() =>
+                          void runAction(
+                            `sync:${item.id}`,
+                            '/api/sync',
+                            { repository: item.id },
+                            'Sync',
+                            'GitHub sync finished',
+                          )
+                        }
+                      >
+                        Sync GitHub
+                      </ActionButton>
+                      {item.githubDevelop?.relation === 'diverged' && (
+                        <ActionButton
+                          busyKey={`match-develop:${item.id}`}
+                          busy={busy}
+                          color="warning"
+                          onClick={() =>
+                            void runAction(
+                              `match-develop:${item.id}`,
+                              '/api/develop/match',
+                              { repository: item.id },
+                              'Match GitHub develop',
+                              'Local develop now matches GitHub. No new commit was created.',
+                            )
+                          }
+                        >
+                          Match GitHub develop
+                        </ActionButton>
+                      )}
+                      {item.githubDevelop?.relation === 'diverged' && (
+                        <ActionButton
+                          busyKey={`reconcile:${item.id}`}
+                          busy={busy}
+                          color="warning"
+                          onClick={() =>
+                            void runAction(
+                              `reconcile:${item.id}`,
+                              '/api/reconcile',
+                              { repository: item.id },
+                              'Validate reconciliation',
+                              'Reconciliation queued',
+                            )
+                          }
+                        >
+                          Validate reconciliation
+                        </ActionButton>
+                      )}
+                      {item.pendingReset && (
+                        <ActionButton
+                          busyKey={`reset:${item.id}`}
+                          busy={busy}
+                          color="warning"
+                          onClick={() =>
+                            void runAction(
+                              `reset:${item.id}`,
+                              '/api/reset-develop',
+                              { repository: item.id },
+                              'Reset develop',
+                              'Develop reset to main',
+                            )
+                          }
+                        >
+                          Reset develop to main
+                        </ActionButton>
+                      )}
+                      {item.integration?.mode === 'frozen' && (
+                        <ActionButton
+                          busyKey={`promotion:${item.id}`}
+                          busy={busy}
+                          onClick={() =>
+                            void runAction(
+                              `promotion:${item.id}`,
+                              '/api/promotion/cancel',
+                              { repository: item.id },
+                              'Release promotion',
+                              'Promotion released',
+                            )
+                          }
+                        >
+                          Release promotion
+                        </ActionButton>
+                      )}
+                      {canOpenMain && (
+                        <ActionButton
+                          busyKey={`main:${item.id}`}
+                          busy={busy}
+                          disabled={itemMainBusy}
+                          onClick={() =>
+                            void runAction(
+                              `main:${item.id}`,
+                              '/api/main',
+                              { repository: item.id },
+                              'Prepare',
+                              'Ready to push. GitHub runs the tests.',
+                            )
+                          }
+                        >
+                          Prepare develop → main
+                        </ActionButton>
+                      )}
+                      {githubMainSha && (
+                        <ActionButton
+                          busyKey={`push-main:${item.id}`}
+                          busy={busy}
+                          variant="contained"
+                          onClick={() =>
+                            void runAction(
+                              `push-main:${item.id}`,
+                              '/api/pushes',
+                              { repository: item.id, branch: 'main' },
+                              'Push',
+                              (body) => (typeof body.remote === 'string' ? body.remote : 'Pushed main to GitHub'),
+                            )
+                          }
+                        >
+                          Push main to GitHub {shortSha(githubMainSha)}
+                        </ActionButton>
+                      )}
+                      {developSha && (
+                        <ActionButton
+                          busyKey={`push-develop:${item.id}`}
+                          busy={busy}
+                          variant="contained"
+                          disabled={developMatchesGitHub(item)}
+                          title={developMatchesGitHub(item) ? 'GitHub develop is already this commit' : undefined}
+                          onClick={() =>
+                            void runAction(
+                              `push-develop:${item.id}`,
+                              '/api/pushes',
+                              { repository: item.id, branch: 'develop' },
+                              'Push',
+                              (body) => (typeof body.remote === 'string' ? body.remote : 'Pushed develop to GitHub'),
+                            )
+                          }
+                        >
+                          Push to develop {shortSha(developSha)}
+                        </ActionButton>
+                      )}
+                    </Box>
+                  </Box>
+                  {item.branches.length === 0 && (
+                    <Typography variant="caption" color="text.secondary" sx={{ display: 'block', px: 1.5, py: 1.25 }}>
+                      No branches in this CI repository yet.
+                    </Typography>
+                  )}
+                  {item.branches.map((branch) => {
+                    const liveRun = runs.find(
+                      (run) =>
+                        run.repository === item.id &&
+                        run.branch === branch.name &&
+                        (run.status === 'running' || run.status === 'queued'),
+                    );
+                    const shown = liveRun?.status ?? branch.status;
+                    return (
+                      <Box
+                        key={`${item.id}:${branch.name}`}
+                        sx={{
+                          px: 1.5,
+                          py: 0.8,
+                          display: 'flex',
+                          alignItems: 'center',
+                          gap: 1,
+                          borderBottom: '1px solid',
+                          borderColor: 'divider',
+                        }}
+                      >
+                        <Typography sx={{ fontSize: 13, fontWeight: 600, flex: 1 }} noWrap>
+                          {branch.name}
+                        </Typography>
+                        <Typography variant="caption" color="text.secondary" sx={{ fontFamily: mono }}>
+                          <Sha value={branch.sha} />
+                        </Typography>
+                        {branch.behindDevelop !== null && branch.name !== 'develop' && (
+                          <Typography
+                            variant="caption"
+                            color={branch.behindDevelop > item.maxBranchDrift ? 'error.main' : 'text.secondary'}
+                          >
+                            {branch.behindDevelop} behind
+                          </Typography>
+                        )}
+                        <Chip
+                          size="small"
+                          label={shown.replaceAll('-', ' ')}
+                          color={
+                            shown === 'running'
+                              ? 'info'
+                              : shown === 'ready-to-merge' || shown === 'ready-to-deploy' || shown === 'passed'
+                                ? 'success'
+                                : shown === 'failed' || shown === 'sync-required'
+                                  ? 'error'
+                                  : 'default'
+                          }
+                        />
+                        {!liveRun &&
+                          branch.name !== 'main' &&
+                          branch.name !== 'develop' &&
+                          branch.status !== 'sync-required' && (
+                            <ActionButton
+                              busyKey={`run:${item.id}:${branch.name}`}
+                              busy={busy}
+                              onClick={() =>
+                                void runAction(
+                                  `run:${item.id}:${branch.name}`,
+                                  '/api/runs/manual',
+                                  { repository: item.id, branch: branch.name },
+                                  'Enqueue',
+                                  'Run queued',
+                                )
+                              }
+                            >
+                              Run
+                            </ActionButton>
+                          )}
+                        {branch.status === 'sync-required' && (
+                          <Button
+                            size="small"
+                            variant="outlined"
+                            disabled={busy !== null}
+                            onClick={() =>
+                              notify(
+                                'warning',
+                                `Sync ${branch.name} in your working copy: git fetch ci develop && git rebase ci/develop && git push --force-with-lease ci ${branch.name}`,
+                              )
+                            }
+                          >
+                            Sync/Rebase
+                          </Button>
+                        )}
+                      </Box>
+                    );
+                  })}
+                </Box>
+              );
+            })}
           </Panel>
 
-          <Panel title="History" fill>
+          <Panel title="History" grow open={historyOpen} onToggle={() => setHistoryOpen((open) => !open)}>
             {!runsReady && (
               <>
                 <RunSkeleton />
@@ -916,6 +930,7 @@ function RunSummary({
   now,
   selected,
   onSelect,
+  repositoryName,
   showMerge,
   busy,
   onMerge,
@@ -927,6 +942,7 @@ function RunSummary({
   now: number;
   selected: boolean;
   onSelect: () => void;
+  repositoryName: string;
   showMerge: boolean;
   busy: string | null;
   onMerge: () => void;
@@ -949,14 +965,22 @@ function RunSummary({
       <Box sx={{ display: 'flex', alignItems: 'center', gap: 1 }}>
         <StatusChip status={run.status} />
         <Typography sx={{ fontSize: 13, fontWeight: 600 }} noWrap>
-          {run.target === 'main' ? 'develop → main' : run.target === 'post-merge' ? 'develop verification' : run.branch}
+          {repositoryName} ·{' '}
+          {run.target === 'main'
+            ? 'develop → main'
+            : run.target === 'post-merge'
+              ? 'develop verification'
+              : run.target === 'develop-gate'
+                ? `full develop suite · ${run.branch}`
+                : run.branch}
         </Typography>
       </Box>
       <Typography variant="caption" color="text.secondary" sx={{ display: 'block' }}>
-        {run.repository} · {run.taskId ?? run.branch} · {run.oldSha === ZERO ? 'new branch' : 'update'} ·{' '}
-        <Sha value={run.newSha} /> · {formatAgo(now, run.createdAt)}
+        {run.taskId ?? run.branch} · {run.oldSha === ZERO ? 'new branch' : 'update'} · <Sha value={run.newSha} /> ·{' '}
+        {formatAgo(now, run.createdAt)}
         {run.exitCode !== null ? ` · exit ${run.exitCode}` : ''}
         {run.integratedAt ? ' · integrated locally' : ''}
+        {run.target === 'main' && run.status === 'ready' ? ' · GitHub runs the tests' : ''}
       </Typography>
       {(run.candidateSha || run.baseSha) && (
         <Typography variant="caption" color="text.secondary" sx={{ display: 'block' }}>
@@ -1001,11 +1025,13 @@ function RunSummary({
               Cancel
             </ActionButton>
           )}
-          {(run.status === 'failed' || run.status === 'canceled' || run.status === 'stale') && run.candidateSha && (
-            <ActionButton busyKey={`retry:${run.id}`} busy={busy} onClick={onRetry}>
-              Retry
-            </ActionButton>
-          )}
+          {(run.status === 'failed' || run.status === 'canceled' || run.status === 'stale') &&
+            run.candidateSha &&
+            run.target !== 'main' && (
+              <ActionButton busyKey={`retry:${run.id}`} busy={busy} onClick={onRetry}>
+                Retry
+              </ActionButton>
+            )}
           {run.target === 'reconcile' && run.status === 'passed' && (
             <ActionButton busyKey={`reconcile:${run.id}`} busy={busy} color="success" onClick={onReconcile}>
               Reconcile develop

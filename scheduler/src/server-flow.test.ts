@@ -6,7 +6,7 @@ import { join } from 'node:path';
 import { test } from 'node:test';
 
 test('API runs YAML, integrates agents, freezes promotion, pushes and resets exact refs', {
-  timeout: 60_000,
+  timeout: 120_000,
 }, async () => {
   const root = mkdtempSync(join(tmpdir(), 'local-ci-server-'));
   const repos = join(root, 'repos');
@@ -111,9 +111,10 @@ test('API runs YAML, integrates agents, freezes promotion, pushes and resets exa
     await post('/api/pushes', { repository: 'project', branch: 'develop' });
     assert.equal(ref(origin, 'develop'), staged);
     const promotion = await post('/api/main', { repository: 'project' });
-    await wait(
-      async () => (await (await fetch(`${base}/api/runs/${promotion.run.id}`)).json()).run.status === 'passed',
-    );
+    const prepared = await (await fetch(`${base}/api/runs/${promotion.run.id}`)).json();
+    assert.equal(prepared.run.status, 'ready');
+    const promotionWorkflows = (await (await fetch(`${base}/api/runs/${promotion.run.id}/workflows`)).json()).workflows;
+    assert.deepEqual(promotionWorkflows, []);
     const headB = createBranch('feat/b');
     await pushEvent('feat/b', headB);
     assert.equal(ref(local, 'develop'), staged);

@@ -5,6 +5,7 @@ import Database from 'better-sqlite3';
 import { asc, desc, eq } from 'drizzle-orm';
 import { drizzle } from 'drizzle-orm/better-sqlite3';
 import { readBranchSha } from './git-repo.ts';
+import { laneFor } from './lane.ts';
 import { logs, repositories, runs } from './schema.ts';
 
 const dataDir = process.env.LOCAL_CI_DATA_DIR ?? join(dirname(fileURLToPath(import.meta.url)), '..', 'data');
@@ -114,8 +115,8 @@ export type CandidateInput = {
   baseSha: string | null;
   headSha: string | null;
   candidateSha: string | null;
-  target?: 'develop' | 'main' | 'reconcile' | 'post-merge' | 'smoke';
-  status: 'queued' | 'failed';
+  target?: 'develop' | 'main' | 'reconcile' | 'post-merge' | 'smoke' | 'develop-gate';
+  status: 'queued' | 'failed' | 'ready';
   logLine?: string;
   taskId?: string | null;
 };
@@ -148,7 +149,7 @@ function staleCandidates(repository: string, developSha: string | null, mainSha:
     sqlite
       .prepare(
         `UPDATE runs SET status = 'stale'
-         WHERE repository = ? AND trigger = 'candidate' AND target = 'main' AND status IN ('queued', 'passed')`,
+         WHERE repository = ? AND trigger = 'candidate' AND target = 'main' AND status IN ('queued', 'passed', 'ready')`,
       )
       .run(repository);
     return;
@@ -159,7 +160,7 @@ function staleCandidates(repository: string, developSha: string | null, mainSha:
       `UPDATE runs SET status = 'stale'
        WHERE repository = ? AND trigger = 'candidate'
          AND target = 'main'
-         AND status IN ('queued', 'passed')
+         AND status IN ('queued', 'passed', 'ready')
          AND (base_sha IS NOT ? OR head_sha IS NOT ?)
          AND NOT (status = 'passed' AND candidate_sha IS ?)`,
     )
@@ -170,6 +171,7 @@ export function recordCandidate(input: CandidateInput) {
   const branch = input.ref.replace(/^refs\/heads\//, '');
   const now = Date.now();
   const failed = input.status === 'failed';
+  const settled = failed || input.status === 'ready';
   const row = {
     id: `run-${now.toString(36)}-${Math.random().toString(36).slice(2, 6)}`,
     repository: input.repository,
@@ -182,7 +184,7 @@ export function recordCandidate(input: CandidateInput) {
     workflow: '.github/workflows/* (pull_request)',
     createdAt: now,
     startedAt: null,
-    finishedAt: failed ? now : null,
+    finishedAt: settled ? now : null,
     exitCode: failed ? 1 : null,
     baseSha: input.baseSha,
     headSha: input.headSha,
@@ -197,7 +199,7 @@ export function recordCandidate(input: CandidateInput) {
     sqlite
       .prepare(
         `UPDATE runs SET status = 'stale'
-         WHERE trigger = 'candidate' AND status IN ('queued', 'passed') AND integrated_at IS NULL AND branch = ? AND repository = ?
+         WHERE trigger = 'candidate' AND status IN ('queued', 'passed', 'ready') AND integrated_at IS NULL AND branch = ? AND repository = ?
            AND (target = ? OR (? = 'develop' AND target IS NULL))`,
       )
       .run(branch, input.repository, target, target);
@@ -241,6 +243,10 @@ export function clearIntegrationControl(repository: string) {
   sqlite.prepare(`DELETE FROM integration_control WHERE repository = ?`).run(repository);
 }
 
+export function releaseAutoMerge(id: string) {
+  sqlite.prepare(`UPDATE runs SET auto_merge = 0 WHERE id = ?`).run(id);
+}
+
 export function markIntegrated(id: string) {
   sqlite.prepare(`UPDATE runs SET integrated_at = ? WHERE id = ? AND status = 'passed'`).run(Date.now(), id);
 }
@@ -260,6 +266,13 @@ export function pendingIntegration() {
     .get() as { id: string } | undefined;
 }
 
+export function interruptedDevelopGate() {
+  return sqlite
+    .prepare(`SELECT r.id, r.status FROM runs r JOIN integration_control c ON c.repository = r.repository
+    WHERE r.target = 'develop-gate' AND r.status IN ('passed', 'failed', 'canceled') AND c.mode = 'frozen'
+      AND c.develop_sha = r.candidate_sha ORDER BY r.created_at DESC LIMIT 1`)
+    .get() as { id: string; status: 'passed' | 'failed' | 'canceled' } | undefined;
+}
 export function interruptedSmoke() {
   return sqlite
     .prepare(`SELECT r.id, r.status FROM runs r JOIN integration_control c ON c.repository = r.repository
@@ -275,7 +288,7 @@ export function interruptedPromotionValidation() {
       AND r.target = 'main' AND r.status = 'failed'
       AND r.head_sha = c.develop_sha
       AND NOT EXISTS (SELECT 1 FROM runs newer WHERE newer.repository = r.repository AND newer.target = 'main'
-        AND newer.created_at > r.created_at AND newer.status IN ('queued', 'running', 'passed'))
+        AND newer.created_at > r.created_at AND newer.status IN ('queued', 'running', 'passed', 'ready'))
       ORDER BY r.created_at DESC LIMIT 1`)
     .get() as { repository: string } | undefined;
 }
@@ -316,7 +329,7 @@ export function findPassedMain(repository: string, mainSha: string, developSha: 
   const row = sqlite
     .prepare(
       `SELECT candidate_sha AS sha FROM runs
-       WHERE repository = ? AND status = 'passed' AND trigger = 'candidate' AND target = 'main'
+       WHERE repository = ? AND status IN ('passed', 'ready') AND trigger = 'candidate' AND target = 'main'
          AND base_sha = ? AND head_sha = ? AND candidate_sha IS NOT NULL
        ORDER BY created_at DESC LIMIT 1`,
     )
@@ -521,9 +534,6 @@ export function retryRun(runId: string) {
 
 export function claimNextRunGlobal() {
   const claim = sqlite.transaction(() => {
-    if (sqlite.prepare(`SELECT id FROM runs WHERE status = 'running' LIMIT 1`).get()) {
-      return undefined;
-    }
     for (const repository of listRepositories()) {
       // Current refs are checked by the worker before this transaction as well.
       staleCandidates(
@@ -532,11 +542,19 @@ export function claimNextRunGlobal() {
         readBranchSha(repository.barePath, 'main'),
       );
     }
-    const next = sqlite
-      .prepare(`SELECT r.id FROM runs r LEFT JOIN integration_control c ON c.repository = r.repository
+    const runningLanes = new Set(
+      (sqlite.prepare(`SELECT repository FROM runs WHERE status = 'running'`).all() as { repository: string }[]).map(
+        (row) => laneFor(getRepository(row.repository)?.name ?? '', row.repository),
+      ),
+    );
+    const queued = sqlite
+      .prepare(`SELECT r.id, r.repository FROM runs r LEFT JOIN integration_control c ON c.repository = r.repository
       WHERE r.status = 'queued' AND (r.target != 'develop' OR c.mode IS NULL)
-      ORDER BY CASE WHEN r.target = 'smoke' THEN 0 ELSE 1 END, r.created_at ASC, r.id ASC LIMIT 1`)
-      .get() as { id: string } | undefined;
+      ORDER BY CASE WHEN r.target IN ('smoke', 'develop-gate') THEN 0 ELSE 1 END, r.created_at ASC, r.id ASC`)
+      .all() as { id: string; repository: string }[];
+    const next = queued.find(
+      (row) => !runningLanes.has(laneFor(getRepository(row.repository)?.name ?? '', row.repository)),
+    );
     if (!next) {
       return undefined;
     }

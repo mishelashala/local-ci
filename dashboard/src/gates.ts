@@ -80,7 +80,7 @@ export function pushMainSha(runs: readonly MergeCandidate[], repo: RepoSnapshot 
   const match = runs.find(
     (run) =>
       run.target === 'main' &&
-      run.status === 'passed' &&
+      (run.status === 'passed' || run.status === 'ready') &&
       run.baseSha === main &&
       run.headSha === develop &&
       isSha40(run.candidateSha),

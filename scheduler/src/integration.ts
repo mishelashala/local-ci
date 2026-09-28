@@ -5,6 +5,7 @@ import {
   getRepository,
   getRun,
   integrationControl,
+  interruptedDevelopGate,
   interruptedPromotionValidation,
   interruptedSmoke,
   listRunsForRepository,
@@ -13,6 +14,7 @@ import {
   markRunStale,
   pendingIntegration,
   recordCandidate,
+  releaseAutoMerge,
   retireCandidate,
   setIntegrationControl,
   staleOrQueuedCandidates,
@@ -22,10 +24,12 @@ import {
   clearRepoCache,
   compareAndSwapDevelop,
   deleteBranchIfMatches,
+  pushDevelop,
   readBranchSha,
   readDevelopSha,
   retainCandidate,
 } from './git-repo.ts';
+import { branchSync, fetchGitHub } from './synchronization.ts';
 
 // Serializes the short ref transition with promotion state changes in this process.
 // The durable control row preserves a freeze over a scheduler restart.
@@ -58,6 +62,25 @@ function dropMergedBranch(bareRepo: string, branch: string, expectedSha: string,
   }
 }
 
+function candidateHas(bareRepo: string, sha: string, path: string) {
+  try {
+    execFileSync('git', [`--git-dir=${bareRepo}`, 'cat-file', '-e', `${sha}:${path}`], { stdio: 'ignore' });
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+function sourceDevelopRun(repository: string, candidateSha: string) {
+  return listRunsForRepository(repository).find(
+    (item) =>
+      item.target === 'develop' &&
+      item.candidateSha === candidateSha &&
+      item.headSha &&
+      item.branch !== 'develop' &&
+      item.branch !== 'main',
+  );
+}
 function isAncestor(repo: string, head: string, base: string) {
   try {
     execFileSync('git', [`--git-dir=${repo}`, 'merge-base', '--is-ancestor', head, base], { stdio: 'ignore' });
@@ -155,6 +178,37 @@ export async function integrate(id: string): Promise<void> {
     }
     if (base !== run.baseSha) {
       await rebuild(id);
+      return;
+    }
+    if (
+      run.candidateSha &&
+      candidateHas(repository.barePath, run.candidateSha, '.local-ci/workflows/develop-tests.yml')
+    ) {
+      setIntegrationControl(run.repository, 'frozen', run.candidateSha, 'Full develop suite');
+      try {
+        recordCandidate({
+          repository: run.repository,
+          ref: run.ref,
+          oldSha: base,
+          newSha: run.candidateSha,
+          baseSha: base,
+          headSha: run.headSha,
+          candidateSha: run.candidateSha,
+          target: 'develop-gate',
+          status: 'queued',
+          taskId: run.taskId,
+        });
+        releaseAutoMerge(id);
+        appendLog(id, `Queued full develop suite for ${run.candidateSha} before moving develop.`);
+      } catch (error) {
+        releaseAutoMerge(id);
+        setIntegrationControl(
+          run.repository,
+          'blocked',
+          run.candidateSha,
+          `Could not enqueue full develop suite: ${String(error)}`,
+        );
+      }
       return;
     }
     const smokeConfigured = (() => {
@@ -269,7 +323,100 @@ export async function completeSmoke(id: string, status: 'passed' | 'failed' | 'c
   });
 }
 
+export async function completeDevelopGate(id: string, status: 'passed' | 'failed' | 'canceled') {
+  const run = getRun(id);
+  if (run?.target !== 'develop-gate') {
+    return;
+  }
+  await withRepositoryLock(run.repository, async () => {
+    const control = integrationControl(run.repository);
+    const repository = getRepository(run.repository);
+    if (!repository || !run.candidateSha || control?.developSha !== run.candidateSha || control.mode !== 'frozen') {
+      return;
+    }
+    const source = sourceDevelopRun(run.repository, run.candidateSha);
+    if (status !== 'passed') {
+      appendLog(id, `Full develop suite ${status}; left local develop in place.`);
+      clearIntegrationControl(run.repository);
+      return;
+    }
+    const base = run.baseSha;
+    if (!base || readDevelopSha(repository.barePath) !== base) {
+      appendLog(id, 'Local develop moved during the full suite; left it in place.');
+      setIntegrationControl(
+        run.repository,
+        'blocked',
+        run.candidateSha,
+        'Full develop suite passed after local develop moved',
+      );
+      return;
+    }
+    let relation: ReturnType<typeof branchSync>['relation'];
+    try {
+      await fetchGitHub(repository.barePath, true);
+      relation = branchSync(repository.barePath, 'develop').relation;
+    } catch (error) {
+      appendLog(id, `Could not fetch GitHub develop (${String(error)}); left local develop in place.`);
+      clearIntegrationControl(run.repository);
+      return;
+    }
+    if (relation !== 'same' && relation !== 'local-ahead') {
+      appendLog(id, `GitHub develop is ${relation}; left local develop in place.`);
+      clearIntegrationControl(run.repository);
+      return;
+    }
+    try {
+      compareAndSwapDevelop(repository.barePath, run.candidateSha, base);
+    } catch {
+      appendLog(id, 'Local develop moved before the fast-forward; left it in place.');
+      setIntegrationControl(
+        run.repository,
+        'blocked',
+        run.candidateSha,
+        'Full develop suite passed but local develop moved',
+      );
+      return;
+    }
+    const pushed = await pushDevelop(repository.barePath);
+    if ('error' in pushed) {
+      try {
+        compareAndSwapDevelop(repository.barePath, base, run.candidateSha);
+        appendLog(id, `GitHub push failed (${pushed.error}); restored local develop to ${base}.`);
+        clearIntegrationControl(run.repository);
+      } catch {
+        setIntegrationControl(
+          run.repository,
+          'blocked',
+          run.candidateSha,
+          'Full suite passed and local develop moved, but the GitHub push failed',
+        );
+        appendLog(id, `GitHub push failed (${pushed.error}); local develop stayed on ${run.candidateSha}.`);
+      }
+      clearRepoCache();
+      return;
+    }
+    execFileSync('git', [
+      `--git-dir=${repository.barePath}`,
+      'update-ref',
+      'refs/remotes/origin/develop',
+      run.candidateSha,
+    ]);
+    if (source?.headSha) {
+      dropMergedBranch(repository.barePath, source.branch, source.headSha, id);
+      markIntegrated(source.id);
+    }
+    appendLog(id, `Pushed ${run.candidateSha} to GitHub develop.`);
+    clearRepoCache();
+    clearIntegrationControl(run.repository);
+  });
+}
+
 export async function maintainIntegrationQueue(): Promise<void> {
+  const gate = interruptedDevelopGate();
+  if (gate) {
+    await completeDevelopGate(gate.id, gate.status);
+    return;
+  }
   const smoke = interruptedSmoke();
   if (smoke) {
     await completeSmoke(smoke.id, smoke.status);
