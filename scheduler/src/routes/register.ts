@@ -1,0 +1,52 @@
+import type { FastifyInstance } from 'fastify'
+import { registerCancelRunRoute } from './cancel-run.ts'
+import { registerCreateRepositoryRoute } from './create-repository.ts'
+import { registerDashboardRoute } from './dashboard.ts'
+import { registerDeleteRepositoryRoute } from './delete-repository.ts'
+import { registerDevelopMatchRoute } from './develop-match.ts'
+import { registerEventsRoute } from './events.ts'
+import { registerHealthRoute } from './health.ts'
+import { registerListRepositoriesRoute } from './list-repositories.ts'
+import { registerListRunsRoute } from './list-runs.ts'
+import { registerMainRoute } from './main.ts'
+import { registerManualRunRoute } from './manual-run.ts'
+import { registerMergesRoute } from './merges.ts'
+import { registerPromotionCancelRoute } from './promotion-cancel.ts'
+import { registerPushesRoute } from './pushes.ts'
+import { registerReconcileRoute } from './reconcile.ts'
+import { registerReconciliationsRoute } from './reconciliations.ts'
+import { registerRepoRoute } from './repo.ts'
+import { registerResetDevelopRoute } from './reset-develop.ts'
+import { registerRetryRunRoute } from './retry-run.ts'
+import { registerRunLogsRoute } from './run-logs.ts'
+import { registerRunResultRoute } from './run-result.ts'
+import { registerRunRoute } from './run.ts'
+import { registerRunWorkflowsRoute } from './run-workflows.ts'
+import { registerSyncRoute } from './sync.ts'
+
+export function registerRoutes(app: FastifyInstance) {
+  registerHealthRoute(app)
+  registerListRepositoriesRoute(app)
+  registerRepoRoute(app)
+  registerListRunsRoute(app)
+  registerCreateRepositoryRoute(app)
+  registerDeleteRepositoryRoute(app)
+  registerRunLogsRoute(app)
+  registerRunWorkflowsRoute(app)
+  registerRunRoute(app)
+  registerRunResultRoute(app)
+  registerCancelRunRoute(app)
+  registerRetryRunRoute(app)
+  registerSyncRoute(app)
+  registerDevelopMatchRoute(app)
+  registerReconcileRoute(app)
+  registerReconciliationsRoute(app)
+  registerResetDevelopRoute(app)
+  registerEventsRoute(app)
+  registerManualRunRoute(app)
+  registerMergesRoute(app)
+  registerMainRoute(app)
+  registerPromotionCancelRoute(app)
+  registerPushesRoute(app)
+  registerDashboardRoute(app)
+}
