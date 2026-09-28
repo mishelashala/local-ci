@@ -1,7 +1,7 @@
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import { execFileSync } from 'node:child_process'
-import { mkdtempSync, writeFileSync, rmSync } from 'node:fs'
+import { mkdirSync, mkdtempSync, writeFileSync, rmSync } from 'node:fs'
 import { join } from 'node:path'
 import { tmpdir } from 'node:os'
 
@@ -31,14 +31,17 @@ test('serial candidates retest against the moved base and a freeze defers integr
       git('-C', work, 'push', 'ci', branch)
     }
     const db = await import('./db.ts')
-    const { createTemporaryMerge } = await import('./git-merge.ts')
+    const { createTemporaryMerge, mergeBranchMessage } = await import('./git-merge.ts')
     const { integrate, maintainIntegrationQueue, completeSmoke } = await import('./integration.ts')
     db.saveRepository({ id: 'test', name: 'test', barePath: bare, origin: null })
     const records = []
     for (const branch of ['feat/a', 'feat/b']) {
       const head = sha(`refs/heads/${branch}`)
-      const merge = await createTemporaryMerge({ bareRepo: bare, baseSha: base, headSha: head })
+      const merge = await createTemporaryMerge({
+        bareRepo: bare, baseSha: base, headSha: head, message: mergeBranchMessage(branch, 'develop'),
+      })
       assert.ok('sha' in merge)
+      assert.equal(git(`--git-dir=${bare}`, 'log', '-1', '--format=%s', merge.sha), `Merge branch '${branch}' into develop`)
       const { retainCandidate } = await import('./git-repo.ts')
       retainCandidate(bare, merge.sha)
       records.push(db.recordCandidate({ repository: 'test', ref: `refs/heads/${branch}`, oldSha: base,
@@ -57,10 +60,13 @@ test('serial candidates retest against the moved base and a freeze defers integr
     assert.ok(latest)
     assert.equal(latest.baseSha, first.candidateSha)
     assert.notEqual(latest.candidateSha, records[1].candidateSha)
+    assert.equal(git(`--git-dir=${bare}`, 'log', '-1', '--format=%s', latest.candidateSha!), `Merge branch 'feat/b' into develop`)
     db.finishRun(latest.id, 'passed', 0)
     await integrate(latest.id)
     assert.equal(sha('refs/heads/develop'), latest.candidateSha)
     assert.equal(db.getRun(latest.id)?.integratedAt !== null, true)
+    assert.throws(() => sha('refs/heads/feat/a'))
+    assert.throws(() => sha('refs/heads/feat/b'))
     db.setIntegrationControl('test', 'frozen', latest.candidateSha, 'Post-merge smoke check')
     const smoke = db.recordCandidate({ repository: 'test', ref: 'refs/heads/develop', oldSha: first.candidateSha!,
       newSha: latest.candidateSha!, baseSha: first.candidateSha, headSha: latest.candidateSha,
@@ -70,6 +76,32 @@ test('serial candidates retest against the moved base and a freeze defers integr
     assert.equal(sha('refs/heads/develop'), first.candidateSha)
     assert.equal(db.getRun(latest.id)?.status, 'failed')
     assert.equal(db.integrationControl('test'), undefined)
+
+    git('-C', work, 'checkout', '-b', 'feat/smoke', 'develop')
+    mkdirSync(join(work, '.local-ci', 'workflows'), { recursive: true })
+    writeFileSync(join(work, '.local-ci', 'workflows', 'develop-smoke.yml'), 'on:\n  push:\n    branches: [develop]\njobs:\n  smoke:\n    runs-on: ubuntu-latest\n    steps:\n      - run: echo ok\n')
+    git('-C', work, 'add', '.'); git('-C', work, 'commit', '-m', 'feat/smoke')
+    git('-C', work, 'push', 'ci', 'feat/smoke')
+    const smokeHead = sha('refs/heads/feat/smoke')
+    const smokeBase = sha('refs/heads/develop')
+    const smokeMerge = await createTemporaryMerge({
+      bareRepo: bare, baseSha: smokeBase, headSha: smokeHead, message: mergeBranchMessage('feat/smoke', 'develop'),
+    })
+    assert.ok('sha' in smokeMerge)
+    const { retainCandidate } = await import('./git-repo.ts')
+    retainCandidate(bare, smokeMerge.sha)
+    const smokeCandidate = db.recordCandidate({ repository: 'test', ref: 'refs/heads/feat/smoke', oldSha: smokeBase,
+      newSha: smokeMerge.sha, baseSha: smokeBase, headSha: smokeHead, candidateSha: smokeMerge.sha, status: 'queued',
+      taskId: 'feat/smoke' })
+    db.finishRun(smokeCandidate.id, 'passed', 0)
+    await integrate(smokeCandidate.id)
+    assert.equal(sha('refs/heads/feat/smoke'), smokeHead)
+    const smokeRun = db.listRunsForRepository('test').find((run) => run.target === 'smoke' && run.candidateSha === smokeMerge.sha)
+    assert.ok(smokeRun)
+    db.finishRun(smokeRun.id, 'passed', 0)
+    await completeSmoke(smokeRun.id, 'passed')
+    assert.throws(() => sha('refs/heads/feat/smoke'))
+    assert.equal(sha('refs/heads/develop'), smokeMerge.sha)
   } finally {
     rmSync(root, { recursive: true, force: true })
   }

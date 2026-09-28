@@ -21,10 +21,20 @@ function git(args: string[]) {
   return execFileAsync('git', args, { encoding: 'utf8' })
 }
 
+const BRANCH = /^[A-Za-z0-9._/-]+$/
+
+export function mergeBranchMessage(branch: string, into: 'develop' | 'main'): string {
+  if (!BRANCH.test(branch) || branch.includes('..') || branch.startsWith('/') || branch.endsWith('/')) {
+    throw new Error('invalid branch name')
+  }
+  return `Merge branch '${branch}' into ${into}`
+}
+
 export async function createTemporaryMerge(input: {
   bareRepo: string
   baseSha: string
   headSha: string
+  message: string
 }): Promise<{ sha: string } | { conflict: true }> {
   requireSha(input.baseSha, 'baseSha')
   requireSha(input.headSha, 'headSha')
@@ -60,6 +70,9 @@ export async function createTemporaryMerge(input: {
     throw new Error('merge-tree did not return a tree SHA')
   }
 
+  const message = input.message.replace(/[\r\n]/g, ' ').trim()
+  if (!message) throw new Error('merge message is empty')
+
   const commit = await git([
     gitDir,
     'commit-tree',
@@ -69,7 +82,7 @@ export async function createTemporaryMerge(input: {
     '-p',
     input.headSha,
     '-m',
-    'temp merge',
+    message,
   ])
   const sha = commit.stdout.trim()
   if (!SHA.test(sha)) {

@@ -2,7 +2,7 @@ import { useEffect, useRef, useState, type ComponentProps } from 'react'
 import { Box, Button, Chip, MenuItem, Select, Skeleton, Typography } from '@mui/material'
 import { useColorMode } from '../color-mode'
 import { formatAgo, mono, shortSha } from '../format'
-import { mainSha, pushDevelopSha, pushMainSha, type RepoSnapshot } from '../gates'
+import { developMatchesGitHub, mainSha, pushDevelopSha, pushMainSha, type RepoSnapshot } from '../gates'
 import { useToast } from '../toast'
 import { LogSkeleton, Panel, RunSkeleton, Sha, StatusChip } from '../ui'
 import { ConnectDialog } from './Connect'
@@ -211,6 +211,17 @@ export function Board() {
         setRepositories((items) => items.map((item) => item.id === saved.id ? saved : item))
         if (activeIdRef.current === saved.id) setRepo(saved)
       }
+      if (result.ok && path === '/api/pushes' && typeof result.body.sha === 'string') {
+        const sent = payload as { branch?: string }
+        if (sent.branch === 'develop') {
+          const sha = result.body.sha
+          const mark = (item: RepoSnapshot): RepoSnapshot => item.id === repositoryId
+            ? { ...item, develop: sha, githubDevelop: { local: sha, github: sha, relation: 'same' } }
+            : item
+          setRepositories((items) => items.map(mark))
+          setRepo((current) => current ? mark(current) : current)
+        }
+      }
       await refreshBoard(repositoryId)
       if (result.ok) notify('success', typeof success === 'function' ? success(result.body) : success)
       else notify('error', apiError(result.body, result.status, label))
@@ -399,6 +410,7 @@ export function Board() {
           {repoReady && repositories.length > 0 && <Button type="button" size="small" onClick={() => setShowRepositories(true)}>All repositories</Button>}
           {repoReady && repositories.length > 0 && <Button type="button" size="small" onClick={() => setShowSetup(true)}>Add repository</Button>}
           {repo && <ActionButton busyKey="sync" busy={busy} onClick={() => void runAction('sync', '/api/sync', { repository: repo.id }, 'Sync', 'GitHub sync finished')}>Sync GitHub</ActionButton>}
+          {repo?.githubDevelop?.relation === 'diverged' && <ActionButton busyKey="match-develop" busy={busy} color="warning" onClick={() => void runAction('match-develop', '/api/develop/match', { repository: repo.id }, 'Match GitHub develop', 'Local develop now matches GitHub. No new commit was created.')}>Match GitHub develop</ActionButton>}
           {repo?.githubDevelop?.relation === 'diverged' && <ActionButton busyKey="reconcile" busy={busy} color="warning" onClick={() => void runAction('reconcile', '/api/reconcile', { repository: repo.id }, 'Validate reconciliation', 'Reconciliation queued')}>Validate reconciliation</ActionButton>}
           {repo?.pendingReset && <ActionButton busyKey="reset" busy={busy} color="warning" onClick={() => void runAction('reset', '/api/reset-develop', { repository: repo.id }, 'Reset develop', 'Develop reset to main')}>Reset develop to main</ActionButton>}
           {repo?.integration?.mode === 'frozen' && <ActionButton busyKey="promotion" busy={busy} onClick={() => void runAction('promotion', '/api/promotion/cancel', { repository: repo.id }, 'Release promotion', 'Promotion released')}>Release promotion</ActionButton>}
@@ -419,7 +431,7 @@ export function Board() {
             </ActionButton>
           )}
           {repoReady && developSha && (
-            <ActionButton busyKey="push-develop" busy={busy} variant="contained" onClick={() => void runAction('push-develop', '/api/pushes', { repository: activeRepositoryId, branch: 'develop' }, 'Push', (body) => typeof body.remote === 'string' ? body.remote : 'Pushed develop to GitHub')}>
+            <ActionButton busyKey="push-develop" busy={busy} variant="contained" disabled={developMatchesGitHub(repo)} title={developMatchesGitHub(repo) ? 'GitHub develop is already this commit' : undefined} onClick={() => void runAction('push-develop', '/api/pushes', { repository: activeRepositoryId, branch: 'develop' }, 'Push', (body) => typeof body.remote === 'string' ? body.remote : 'Pushed develop to GitHub')}>
               Push to develop {shortSha(developSha)}
             </ActionButton>
           )}

@@ -125,6 +125,24 @@ export function compareAndSwapDevelop(bareRepo: string, newSha: string, oldSha: 
   compareAndSwapRef(bareRepo, 'refs/heads/develop', newSha, oldSha)
 }
 
+const PROTECTED_BRANCHES = new Set(['develop', 'main'])
+const BRANCH_NAME = /^[A-Za-z0-9._/-]+$/
+
+/** Delete a feature branch only when it still points at the merged tip. */
+export function deleteBranchIfMatches(bareRepo: string, branch: string, expectedSha: string): 'deleted' | 'moved' | 'skipped' {
+  if (PROTECTED_BRANCHES.has(branch) || !BRANCH_NAME.test(branch) || branch.includes('..') || branch.startsWith('/') || branch.endsWith('/') || branch.includes('//')) return 'skipped'
+  if (!SHA.test(expectedSha)) return 'skipped'
+  const current = readBranchSha(bareRepo, branch)
+  if (!current) return 'skipped'
+  if (current !== expectedSha.toLowerCase()) return 'moved'
+  try {
+    gitSync(bareRepo, ['update-ref', '-d', `refs/heads/${branch}`, expectedSha])
+    return 'deleted'
+  } catch {
+    return 'moved'
+  }
+}
+
 export function retainCandidate(bareRepo: string, sha: string) {
   if (!SHA.test(sha)) throw new Error('invalid candidate SHA')
   gitSync(bareRepo, ['update-ref', `refs/local-ci/candidates/${sha}`, sha])

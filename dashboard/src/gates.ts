@@ -41,6 +41,12 @@ export function pushDevelopSha(runs: readonly MergeCandidate[], repo: RepoSnapsh
   return candidate && !repo.integration ? develop : null
 }
 
+export function developMatchesGitHub(repo: RepoSnapshot | null): boolean {
+  const local = repo?.develop
+  const github = repo?.githubDevelop?.github
+  return isSha40(local) && isSha40(github) && local.toLowerCase() === github.toLowerCase()
+}
+
 export function mainSha(repo: RepoSnapshot | null): string | null {
   const sha = repo?.branches.find((branch) => branch.name === 'main')?.sha
   return isSha40(sha) ? sha : null

@@ -1,7 +1,7 @@
 import { execFileSync } from 'node:child_process'
-import { createTemporaryMerge } from './git-merge.ts'
-import { appendLog, clearIntegrationControl, getRepository, getRun, integrationControl, interruptedPromotionValidation, interruptedSmoke, markDefective, markIntegrated, markRunStale, pendingIntegration, recordCandidate, retireCandidate, setIntegrationControl, staleOrQueuedCandidates } from './db.ts'
-import { clearRepoCache, compareAndSwapDevelop, readBranchSha, readDevelopSha, retainCandidate } from './git-repo.ts'
+import { createTemporaryMerge, mergeBranchMessage } from './git-merge.ts'
+import { appendLog, clearIntegrationControl, getRepository, getRun, integrationControl, interruptedPromotionValidation, interruptedSmoke, listRunsForRepository, markDefective, markIntegrated, markRunStale, pendingIntegration, recordCandidate, retireCandidate, setIntegrationControl, staleOrQueuedCandidates } from './db.ts'
+import { clearRepoCache, compareAndSwapDevelop, deleteBranchIfMatches, readBranchSha, readDevelopSha, retainCandidate } from './git-repo.ts'
 
 // Serializes the short ref transition with promotion state changes in this process.
 // The durable control row preserves a freeze over a scheduler restart.
@@ -14,6 +14,12 @@ export async function withRepositoryLock<T>(repository: string, operation: () =>
   await previous
   try { return await operation() }
   finally { release(); if (tails.get(repository) === tail) tails.delete(repository) }
+}
+
+function dropMergedBranch(bareRepo: string, branch: string, expectedSha: string, logId: string) {
+  const result = deleteBranchIfMatches(bareRepo, branch, expectedSha)
+  if (result === 'deleted') appendLog(logId, `Deleted branch ${branch} after it landed on develop.`)
+  if (result === 'moved') appendLog(logId, `Branch ${branch} moved after the merge; left it in place.`)
 }
 
 function isAncestor(repo: string, head: string, base: string) {
@@ -39,7 +45,10 @@ async function rebuild(id: string): Promise<void> {
     retireCandidate(id, 'Branch tip is already in develop.')
     return
   }
-  const merged = await createTemporaryMerge({ bareRepo: repository.barePath, baseSha: base, headSha: head })
+  const merged = await createTemporaryMerge({
+    bareRepo: repository.barePath, baseSha: base, headSha: head,
+    message: mergeBranchMessage(run.branch, 'develop'),
+  })
   if ('conflict' in merged) {
     recordCandidate({ repository: run.repository, ref: run.ref, oldSha: run.oldSha, newSha: head,
       baseSha: base, headSha: head, candidateSha: null, target: 'develop', status: 'failed', taskId: run.taskId,
@@ -80,6 +89,7 @@ export async function integrate(id: string): Promise<void> {
     if (smokeConfigured) setIntegrationControl(run.repository, 'frozen', run.candidateSha, 'Post-merge smoke check')
     markIntegrated(id)
     appendLog(id, `Automatically integrated ${run.candidateSha} into local develop.`)
+    if (!smokeConfigured && run.headSha) dropMergedBranch(repository.barePath, run.branch, run.headSha, id)
     clearRepoCache()
     if (smokeConfigured) try {
       recordCandidate({ repository: run.repository, ref: 'refs/heads/develop', oldSha: base,
@@ -100,6 +110,11 @@ export async function completeSmoke(id: string, status: 'passed' | 'failed' | 'c
     if (!repository || control?.developSha !== run.candidateSha || control.mode !== 'frozen') return
     if (status === 'passed') {
       appendLog(id, `Healthy develop ${run.candidateSha}; integration resumes.`)
+      const source = listRunsForRepository(run.repository).find((item) =>
+        item.target === 'develop' && item.candidateSha === run.candidateSha && item.integratedAt && item.headSha
+        && item.branch !== 'develop' && item.branch !== 'main')
+      if (source?.headSha) dropMergedBranch(repository.barePath, source.branch, source.headSha, id)
+      clearRepoCache()
       clearIntegrationControl(run.repository)
       return
     }

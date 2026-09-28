@@ -1,6 +1,6 @@
 import { execFile, execFileSync } from 'node:child_process'
 import { promisify } from 'node:util'
-import { clearRepoCache, readBranchSha } from './git-repo.ts'
+import { clearRepoCache, compareAndSwapDevelop, readBranchSha, retainCandidate } from './git-repo.ts'
 
 const execFileAsync = promisify(execFile)
 const fetches = new Map<string, Promise<void>>()
@@ -75,6 +75,18 @@ export async function synchronizeBranch(path: string, branch: 'main' | 'develop'
 
 export async function synchronizeDevelop(path: string, force = false) {
   return synchronizeBranch(path, 'develop', force)
+}
+
+/** Point local develop at GitHub's existing develop commit. Never creates a commit. */
+export async function matchLocalDevelop(path: string): Promise<BranchSync> {
+  await fetchGitHub(path, true)
+  const state = branchSync(path, 'develop')
+  if (!state.github || !state.local || state.local === state.github) return state
+  if (state.relation !== 'diverged' && state.relation !== 'github-ahead') return state
+  retainCandidate(path, state.local)
+  compareAndSwapDevelop(path, state.github, state.local)
+  clearRepoCache()
+  return branchSync(path, 'develop')
 }
 
 export function assertRemoteUnchanged(path: string, branch: 'main' | 'develop', expected: string | null) {

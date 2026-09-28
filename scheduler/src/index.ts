@@ -3,7 +3,7 @@ import { randomUUID } from 'node:crypto'
 import { copyFileSync, createReadStream, existsSync, mkdirSync, readdirSync, rmSync, statSync } from 'node:fs'
 import { execFileSync } from 'node:child_process'
 import { extname, join, resolve } from 'node:path'
-import { createTemporaryMerge } from './git-merge.ts'
+import { createTemporaryMerge, mergeBranchMessage } from './git-merge.ts'
 import {
   clearRepoCache,
   compareAndSwapDevelop,
@@ -45,7 +45,7 @@ import {
 } from './db.ts'
 import { cancelActiveRun, startWorker } from './worker.ts'
 import { withRepositoryLock } from './integration.ts'
-import { assertRemoteUnchanged, branchSync, remoteSha, synchronizeBranch, synchronizeDevelop } from './synchronization.ts'
+import { assertRemoteUnchanged, branchSync, matchLocalDevelop, remoteSha, synchronizeBranch, synchronizeDevelop } from './synchronization.ts'
 
 const ORIGIN_HELP = 'Save the GitHub remote on the setup screen.'
 const GITHUB_REMOTE = /^(?:git@[\w.-]+:[\w./~-]+|ssh:\/\/git@[\w.-]+\/[\w./~-]+|https:\/\/[\w.-]+\/[\w./~-]+)(?:\.git)?$/
@@ -305,6 +305,21 @@ app.post('/sync', async (request, reply) => {
   } catch (error) { return reply.code(502).send({ error: `GitHub synchronization failed: ${String(error)}` }) }
 })
 
+app.post('/develop/match', async (request, reply) => {
+  const body = request.body as { repository?: unknown } | null
+  const repository = repositoryFor(body?.repository)
+  if (!repository) return reply.code(404).send({ error: 'repository not found' })
+  if (integrationControl(repository.id)) return reply.code(409).send({ error: 'promotion or recovery is active' })
+  const path = repository.barePath
+  try {
+    const after = await matchLocalDevelop(path)
+    if (after.relation === 'local-ahead') return reply.code(409).send({ error: 'local develop is ahead of GitHub; matching it would drop those commits' })
+    if (after.relation === 'github-missing') return reply.code(409).send({ error: 'GitHub develop was not fetched' })
+    if (after.relation !== 'same') return reply.code(409).send({ error: 'local develop was not moved' })
+    return snapshotFor(repository)
+  } catch (error) { return reply.code(409).send({ error: String(error) }) }
+})
+
 app.post('/reconcile', async (request, reply) => {
   const body = request.body as { repository?: unknown } | null
   const repository = repositoryFor(body?.repository)
@@ -314,7 +329,10 @@ app.post('/reconcile', async (request, reply) => {
   catch (error) { return reply.code(502).send({ error: `GitHub synchronization failed: ${String(error)}` }) }
   const sync = branchSync(path, 'develop')
   if (sync.relation !== 'diverged' || !sync.local || !sync.github) return reply.code(409).send({ error: 'develop is not diverged' })
-  const merged = await createTemporaryMerge({ bareRepo: path, baseSha: sync.github, headSha: sync.local })
+  const merged = await createTemporaryMerge({
+    bareRepo: path, baseSha: sync.github, headSha: sync.local,
+    message: 'Merge GitHub develop into local develop',
+  })
   if ('conflict' in merged) return reply.code(409).send({ error: 'reconciliation has merge conflicts; resolve in your working copy' })
   retainCandidate(path, merged.sha)
   const run = recordCandidate({ repository: repository.id, ref: 'refs/heads/develop', oldSha: sync.github,
@@ -431,6 +449,7 @@ app.post('/events', async (request, reply) => {
     bareRepo: repoPath,
     baseSha: developSha,
     headSha: parsed.newSha,
+    message: mergeBranchMessage(parsed.ref.slice('refs/heads/'.length), 'develop'),
   })
   if ('conflict' in merged) {
     const run = recordCandidate({
@@ -500,7 +519,10 @@ app.post('/main', async (request, reply) => {
     clearIntegrationControl(repository.id)
     return reply.code(409).send({ error: 'main or develop is missing. Connect the repository in the dashboard.' })
   }
-  const merged = await createTemporaryMerge({ bareRepo: repoPath, baseSha: mainSha, headSha: developSha })
+  const merged = await createTemporaryMerge({
+    bareRepo: repoPath, baseSha: mainSha, headSha: developSha,
+    message: mergeBranchMessage('develop', 'main'),
+  })
   if ('conflict' in merged) {
     clearIntegrationControl(repository.id)
     const run = recordCandidate({
