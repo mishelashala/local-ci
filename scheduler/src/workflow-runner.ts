@@ -14,6 +14,7 @@ import {
 import { createServer } from 'node:net';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
+import { fileURLToPath } from 'node:url';
 import { minimatch } from 'minimatch';
 import YAML from 'yaml';
 
@@ -65,6 +66,17 @@ export function ghContainerOption(binary: string): string {
   return `--volume ${quoteArg(binary)}:/usr/local/bin/gh:ro`;
 }
 
+export function jobContainerOptions(ghBinary: string | null, storeDir: string): string {
+  const store = `--volume ${quoteArg(storeDir)}:/pnpm/store`;
+  return ghBinary ? `${ghContainerOption(ghBinary)} ${store}` : store;
+}
+
+export function pnpmStoreDir(root = process.env.LOCAL_CI_DATA_DIR): string {
+  const dir = join(root ?? join(dirname(fileURLToPath(import.meta.url)), '..', 'data'), 'pnpm-store');
+  mkdirSync(dir, { recursive: true });
+  return dir;
+}
+
 export function actEnvContents(
   pathValue: string,
   token: string | null,
@@ -77,7 +89,13 @@ export function actEnvContents(
       return Boolean(trimmed);
     }
     const key = trimmed.split('=', 1)[0];
-    return key !== 'PATH' && key !== 'GH_TOKEN' && key !== 'GITHUB_TOKEN' && key !== 'LOCAL_CI_CHANGED_FILES';
+    return (
+      key !== 'PATH' &&
+      key !== 'GH_TOKEN' &&
+      key !== 'GITHUB_TOKEN' &&
+      key !== 'LOCAL_CI_CHANGED_FILES' &&
+      key !== 'npm_config_store_dir'
+    );
   });
   const lines = [...kept, `PATH=${pathValue}`];
   if (token) {
@@ -86,6 +104,7 @@ export function actEnvContents(
   if (changedFiles !== undefined) {
     lines.push(`LOCAL_CI_CHANGED_FILES=${changedFiles}`);
   }
+  lines.push('npm_config_store_dir=/pnpm/store');
   return `${lines.join('\n')}\n`;
 }
 
@@ -710,7 +729,8 @@ export class ActWorkflowRunner implements WorkflowRunner {
           '--concurrent-jobs',
           process.env.LOCAL_CI_CONCURRENT_JOBS ?? '1',
           ...(envFile ? ['--env-file', envFile] : ['--env', `PATH=${pathValue}`]),
-          ...(ghBinary ? ['--container-options', ghContainerOption(ghBinary)] : []),
+          '--container-options',
+          jobContainerOptions(ghBinary, pnpmStoreDir()),
           '--container-architecture',
           containerArchitecture(),
           '-P',

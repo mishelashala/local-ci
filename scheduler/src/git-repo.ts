@@ -40,7 +40,7 @@ export function readBranchSha(bareRepo: string, branch: string): string | null {
 
 export function readOrigin(bareRepo: string): string | null {
   try {
-    const url = gitSync(bareRepo, ['remote', 'get-url', 'origin']).trim();
+    const url = gitSync(bareRepo, ['config', '--get', 'remote.origin.url']).trim();
     return url.length > 0 ? url : null;
   } catch {
     return null;

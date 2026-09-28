@@ -75,10 +75,8 @@ export async function snapshotFor(repository: NonNullable<ReturnType<typeof getR
     let status: typeof branch.status = 'idle';
     if (branch.name === 'develop' && mainRun?.candidateSha) {
       status = 'ready-to-deploy';
-    } else if (readyMerge && (branch.behindDevelop ?? 0) <= MAX_BRANCH_DRIFT) {
+    } else if (readyMerge) {
       status = 'ready-to-merge';
-    } else if ((branch.behindDevelop ?? 0) > MAX_BRANCH_DRIFT) {
-      status = 'sync-required';
     } else if (latest?.status === 'queued' || latest?.status === 'running' || latest?.status === 'failed') {
       status = latest.status;
     } else if (latest?.status === 'passed') {

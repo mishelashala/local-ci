@@ -2,7 +2,7 @@ import { Box, Button, Chip, Skeleton, Typography } from '@mui/material';
 import { type ComponentProps, useEffect, useRef, useState } from 'react';
 import { useColorMode } from '../color-mode';
 import { formatAgo, mono, shortSha } from '../format';
-import { developMatchesGitHub, mainSha, pushDevelopSha, pushMainSha, type RepoSnapshot } from '../gates';
+import { developMatchesGitHub, mainSha, pushDevelopSha, type RepoSnapshot } from '../gates';
 import { useToast } from '../toast';
 import { LogSkeleton, Panel, RunSkeleton, Sha, StatusChip } from '../ui';
 import { ConnectDialog } from './Connect';
@@ -591,17 +591,7 @@ export function Board() {
             {queued.map(summary)}
           </Panel>
 
-          <Panel
-            title="Projects"
-            open={branchesOpen}
-            onToggle={() => setBranchesOpen((open) => !open)}
-            maxHeight={480}
-            action={
-              <Typography variant="caption" color="text.secondary">
-                {repositories[0]?.maxBranchDrift ?? 10} commit drift limit
-              </Typography>
-            }
-          >
+          <Panel title="Projects" open={branchesOpen} onToggle={() => setBranchesOpen((open) => !open)} maxHeight={480}>
             {repositories.length === 0 && (
               <Typography variant="caption" color="text.secondary" sx={{ display: 'block', px: 1.5, py: 1.25 }}>
                 No branches in this CI repository yet.
@@ -610,7 +600,6 @@ export function Board() {
             {repositories.map((item) => {
               const itemRuns = runs.filter((run) => run.repository === item.id);
               const developSha = pushDevelopSha(itemRuns, item);
-              const githubMainSha = pushMainSha(itemRuns, item);
               const canOpenMain = mainSha(item) !== null && item.develop != null && !item.integration;
               const itemMainBusy = itemRuns.some(
                 (run) => run.target === 'main' && (run.status === 'queued' || run.status === 'running'),
@@ -746,29 +735,11 @@ export function Board() {
                               '/api/main',
                               { repository: item.id },
                               'Prepare',
-                              'Ready to push. GitHub runs the tests.',
+                              (body) => (typeof body.url === 'string' ? body.url : 'Opened the GitHub pull request'),
                             )
                           }
                         >
                           Prepare develop → main
-                        </ActionButton>
-                      )}
-                      {githubMainSha && (
-                        <ActionButton
-                          busyKey={`push-main:${item.id}`}
-                          busy={busy}
-                          variant="contained"
-                          onClick={() =>
-                            void runAction(
-                              `push-main:${item.id}`,
-                              '/api/pushes',
-                              { repository: item.id, branch: 'main' },
-                              'Push',
-                              (body) => (typeof body.remote === 'string' ? body.remote : 'Pushed main to GitHub'),
-                            )
-                          }
-                        >
-                          Push main to GitHub {shortSha(githubMainSha)}
                         </ActionButton>
                       )}
                       {developSha && (
@@ -826,10 +797,7 @@ export function Board() {
                           <Sha value={branch.sha} />
                         </Typography>
                         {branch.behindDevelop !== null && branch.name !== 'develop' && (
-                          <Typography
-                            variant="caption"
-                            color={branch.behindDevelop > item.maxBranchDrift ? 'error.main' : 'text.secondary'}
-                          >
+                          <Typography variant="caption" color="text.secondary">
                             {branch.behindDevelop} behind
                           </Typography>
                         )}
@@ -841,45 +809,27 @@ export function Board() {
                               ? 'info'
                               : shown === 'ready-to-merge' || shown === 'ready-to-deploy' || shown === 'passed'
                                 ? 'success'
-                                : shown === 'failed' || shown === 'sync-required'
+                                : shown === 'failed'
                                   ? 'error'
                                   : 'default'
                           }
                         />
-                        {!liveRun &&
-                          branch.name !== 'main' &&
-                          branch.name !== 'develop' &&
-                          branch.status !== 'sync-required' && (
-                            <ActionButton
-                              busyKey={`run:${item.id}:${branch.name}`}
-                              busy={busy}
-                              onClick={() =>
-                                void runAction(
-                                  `run:${item.id}:${branch.name}`,
-                                  '/api/runs/manual',
-                                  { repository: item.id, branch: branch.name },
-                                  'Enqueue',
-                                  'Run queued',
-                                )
-                              }
-                            >
-                              Run
-                            </ActionButton>
-                          )}
-                        {branch.status === 'sync-required' && (
-                          <Button
-                            size="small"
-                            variant="outlined"
-                            disabled={busy !== null}
+                        {!liveRun && branch.name !== 'main' && branch.name !== 'develop' && (
+                          <ActionButton
+                            busyKey={`run:${item.id}:${branch.name}`}
+                            busy={busy}
                             onClick={() =>
-                              notify(
-                                'warning',
-                                `Sync ${branch.name} in your working copy: git fetch ci develop && git rebase ci/develop && git push --force-with-lease ci ${branch.name}`,
+                              void runAction(
+                                `run:${item.id}:${branch.name}`,
+                                '/api/runs/manual',
+                                { repository: item.id, branch: branch.name },
+                                'Enqueue',
+                                'Run queued',
                               )
                             }
                           >
-                            Sync/Rebase
-                          </Button>
+                            Run
+                          </ActionButton>
                         )}
                       </Box>
                     );

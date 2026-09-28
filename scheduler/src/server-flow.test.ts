@@ -68,6 +68,11 @@ test('API runs YAML, integrates agents, freezes promotion, pushes and resets exa
       '#!/bin/sh\necho "fake act: $1 $*"\nif [ "$1" = push ]; then exit 1; fi\nexit 0\n',
       { mode: 0o755 },
     );
+    writeFileSync(
+      join(bin, 'gh'),
+      '#!/bin/sh\ncase "$1 $2" in\n  "pr list") echo \'[]\' ;;\n  "pr create") echo \'https://github.com/example/project/pull/7\' ;;\n  *) exit 1 ;;\nesac\n',
+      { mode: 0o755 },
+    );
     server = spawn('node', ['--import', './scheduler/node_modules/tsx/dist/loader.mjs', 'scheduler/src/index.ts'], {
       cwd: join(import.meta.dirname, '..', '..'),
       env: {
@@ -110,24 +115,18 @@ test('API runs YAML, integrates agents, freezes promotion, pushes and resets exa
     const staged = ref(local, 'develop');
     await post('/api/pushes', { repository: 'project', branch: 'develop' });
     assert.equal(ref(origin, 'develop'), staged);
+    git(`--git-dir=${local}`, 'remote', 'set-url', 'origin', 'git@github.com:example/project.git');
+    git(`--git-dir=${local}`, 'config', `url.${origin}/.insteadOf`, 'git@github.com:example/project.git');
     const promotion = await post('/api/main', { repository: 'project' });
-    const prepared = await (await fetch(`${base}/api/runs/${promotion.run.id}`)).json();
-    assert.equal(prepared.run.status, 'ready');
-    const promotionWorkflows = (await (await fetch(`${base}/api/runs/${promotion.run.id}/workflows`)).json()).workflows;
-    assert.deepEqual(promotionWorkflows, []);
+    assert.equal(promotion.url, 'https://github.com/example/project/pull/7');
     const headB = createBranch('feat/b');
     await pushEvent('feat/b', headB);
-    assert.equal(ref(local, 'develop'), staged);
-    await post('/api/pushes', { repository: 'project', branch: 'main' });
-    await post('/api/reset-develop', { repository: 'project' });
-    assert.equal(ref(origin, 'develop'), ref(origin, 'main'));
     await wait(async () => {
       const runs = (await (await fetch(`${base}/api/runs?repository=project`)).json()).runs;
       return runs.some(
         (item: { branch: string; integratedAt: number | null }) => item.branch === 'feat/b' && item.integratedAt,
       );
     });
-    assert.notEqual(ref(local, 'develop'), ref(origin, 'develop'));
     const healthy = ref(local, 'develop');
     git('-C', work, 'checkout', '-b', 'feat/c', 'main');
     writeFileSync(

@@ -149,7 +149,6 @@ test('serial candidates retest against the moved base and a freeze defers integr
     assert.throws(() => sha('refs/heads/feat/smoke'));
     assert.equal(sha('refs/heads/develop'), smokeMerge.sha);
 
-    const { completeDevelopGate } = await import('./integration.ts');
     const github = join(root, 'github.git');
     git('init', '--bare', '-b', 'develop', github);
     git(`--git-dir=${bare}`, 'remote', 'add', 'origin', github);
@@ -189,20 +188,15 @@ test('serial candidates retest against the moved base and a freeze defers integr
     });
     db.finishRun(landRun.id, 'passed', 0);
     await integrate(landRun.id);
-    assert.equal(sha('refs/heads/develop'), landBase);
-    assert.equal(sha('refs/heads/feat/land'), landHead);
-    assert.equal(db.integrationControl('test')?.mode, 'frozen');
-    const landGate = db
-      .listRunsForRepository('test')
-      .find((run) => run.target === 'develop-gate' && run.candidateSha === landMerge.sha);
-    assert.ok(landGate);
-    db.finishRun(landGate.id, 'passed', 0);
-    await completeDevelopGate(landGate.id, 'passed');
     assert.equal(sha('refs/heads/develop'), landMerge.sha);
     assert.equal(git('--git-dir', github, 'rev-parse', 'refs/heads/develop'), landMerge.sha);
     assert.throws(() => sha('refs/heads/feat/land'));
     assert.equal(db.getRun(landRun.id)?.integratedAt !== null, true);
     assert.equal(db.integrationControl('test'), undefined);
+    assert.equal(
+      db.listRunsForRepository('test').some((run) => run.target === 'develop-gate'),
+      false,
+    );
 
     git('-C', gateWork, 'fetch', 'origin', 'develop');
     git('-C', gateWork, 'checkout', '-B', 'feat/ahead', 'origin/develop');
@@ -231,11 +225,6 @@ test('serial candidates retest against the moved base and a freeze defers integr
       status: 'queued',
     });
     db.finishRun(aheadRun.id, 'passed', 0);
-    await integrate(aheadRun.id);
-    const aheadGate = db
-      .listRunsForRepository('test')
-      .find((run) => run.target === 'develop-gate' && run.candidateSha === aheadMerge.sha);
-    assert.ok(aheadGate);
     const githubWork = join(root, 'github-work');
     git('clone', github, githubWork);
     git('-C', githubWork, 'config', 'user.name', 'CI test');
@@ -244,8 +233,7 @@ test('serial candidates retest against the moved base and a freeze defers integr
     git('-C', githubWork, 'add', '.');
     git('-C', githubWork, 'commit', '-m', 'github moved');
     git('-C', githubWork, 'push', 'origin', 'HEAD:develop');
-    db.finishRun(aheadGate.id, 'passed', 0);
-    await completeDevelopGate(aheadGate.id, 'passed');
+    await integrate(aheadRun.id);
     assert.equal(sha('refs/heads/develop'), aheadBase);
     assert.equal(sha('refs/heads/feat/ahead'), aheadHead);
     assert.equal(db.integrationControl('test'), undefined);

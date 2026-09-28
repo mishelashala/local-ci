@@ -1,15 +1,9 @@
 import type { FastifyInstance } from 'fastify';
-import {
-  clearIntegrationControl,
-  integrationControl,
-  listRepositories,
-  recordCandidate,
-  setIntegrationControl,
-} from '../db.ts';
-import { createTemporaryMerge, mergeBranchMessage } from '../git-merge.ts';
-import { readBranchSha, readDevelopSha, retainCandidate } from '../git-repo.ts';
+import { integrationControl, listRepositories } from '../db.ts';
+import { pushDevelop, readOrigin } from '../git-repo.ts';
+import { githubSlug, openDevelopPullRequest } from '../github-pr.ts';
 import { withRepositoryLock } from '../integration.ts';
-import { synchronizeBranch, synchronizeDevelop } from '../synchronization.ts';
+import { branchSync, fetchGitHub } from '../synchronization.ts';
 import { repositoryFor } from './context.ts';
 
 export function registerMainRoute(app: FastifyInstance) {
@@ -23,66 +17,38 @@ export function registerMainRoute(app: FastifyInstance) {
       if (integrationControl(repository.id)) {
         return reply.code(409).send({ error: 'promotion or recovery is already active' });
       }
-      const frozenSha = readDevelopSha(repository.barePath);
-      if (!frozenSha) {
-        return reply.code(409).send({ error: 'develop is missing' });
+      const origin = readOrigin(repository.barePath);
+      const slug = origin ? githubSlug(origin) : null;
+      if (!slug) {
+        return reply.code(409).send({ error: 'origin is not a GitHub repository' });
       }
-      setIntegrationControl(repository.id, 'frozen', frozenSha, 'Ready to push develop → main');
-      const repoPath = repository.barePath;
       try {
-        const develop = await synchronizeDevelop(repoPath, true);
-        const main = await synchronizeBranch(repoPath, 'main');
-        if (develop.relation === 'diverged' || main.relation === 'diverged' || readDevelopSha(repoPath) !== frozenSha) {
-          clearIntegrationControl(repository.id);
-          return reply.code(409).send({ error: 'branches changed during promotion setup; retry' });
-        }
+        await fetchGitHub(repository.barePath, true);
       } catch (error) {
-        clearIntegrationControl(repository.id);
         return reply.code(502).send({ error: `GitHub synchronization failed: ${String(error)}` });
       }
-      const mainSha = readBranchSha(repoPath, 'main');
-      const developSha = readDevelopSha(repoPath);
-      if (!mainSha || !developSha) {
-        clearIntegrationControl(repository.id);
-        return reply.code(409).send({ error: 'main or develop is missing. Connect the repository in the dashboard.' });
+      const develop = branchSync(repository.barePath, 'develop');
+      if (
+        develop.relation === 'diverged' ||
+        develop.relation === 'github-missing' ||
+        develop.relation === 'local-missing'
+      ) {
+        return reply.code(409).send({ error: `GitHub develop is ${develop.relation}` });
       }
-      const merged = await createTemporaryMerge({
-        bareRepo: repoPath,
-        baseSha: mainSha,
-        headSha: developSha,
-        message: mergeBranchMessage('develop', 'main'),
-      });
-      if ('conflict' in merged) {
-        clearIntegrationControl(repository.id);
-        const run = recordCandidate({
-          repository: repository.id,
-          ref: 'refs/heads/develop',
-          oldSha: mainSha,
-          newSha: developSha,
-          baseSha: mainSha,
-          headSha: developSha,
-          candidateSha: null,
-          target: 'main',
-          status: 'failed',
-          logLine: 'merge conflict with main',
-        });
-        return reply.code(201).send({ run });
+      if (develop.relation === 'github-ahead') {
+        return reply.code(409).send({ error: 'GitHub develop is ahead; sync before opening the pull request' });
       }
-      const sha = merged.sha.toLowerCase();
-      retainCandidate(repoPath, sha);
-      const run = recordCandidate({
-        repository: repository.id,
-        ref: 'refs/heads/develop',
-        oldSha: mainSha,
-        newSha: sha,
-        baseSha: mainSha,
-        headSha: developSha,
-        candidateSha: sha,
-        target: 'main',
-        status: 'ready',
-        logLine: 'Local CI skipped this suite. GitHub runs the develop → main tests after the push.',
-      });
-      return reply.code(201).send({ run });
+      if (develop.relation === 'local-ahead') {
+        const pushed = await pushDevelop(repository.barePath);
+        if ('error' in pushed) {
+          return reply.code(502).send({ error: pushed.error });
+        }
+      }
+      const opened = await openDevelopPullRequest(slug);
+      if ('error' in opened) {
+        return reply.code(502).send({ error: opened.error });
+      }
+      return reply.code(201).send({ url: opened.url });
     });
   });
 }

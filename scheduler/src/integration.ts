@@ -158,6 +158,61 @@ async function rebuild(id: string): Promise<void> {
   });
 }
 
+async function publishDevelop(
+  id: string,
+  repositoryId: string,
+  bareRepo: string,
+  base: string,
+  candidateSha: string,
+  branch: string,
+  headSha: string | null,
+) {
+  let relation: ReturnType<typeof branchSync>['relation'];
+  try {
+    await fetchGitHub(bareRepo, true);
+    relation = branchSync(bareRepo, 'develop').relation;
+  } catch (error) {
+    releaseAutoMerge(id);
+    appendLog(id, `Could not fetch GitHub develop (${String(error)}). Left local develop in place.`);
+    return;
+  }
+  if (relation !== 'same' && relation !== 'local-ahead') {
+    releaseAutoMerge(id);
+    appendLog(id, `GitHub develop is ${relation}; left local develop in place.`);
+    return;
+  }
+  if (readDevelopSha(bareRepo) !== base) {
+    await rebuild(id);
+    return;
+  }
+  try {
+    compareAndSwapDevelop(bareRepo, candidateSha, base);
+  } catch {
+    await rebuild(id);
+    return;
+  }
+  const pushed = await pushDevelop(bareRepo);
+  if ('error' in pushed) {
+    try {
+      compareAndSwapDevelop(bareRepo, base, candidateSha);
+      appendLog(id, `GitHub push failed (${pushed.error}); restored local develop to ${base}.`);
+    } catch {
+      setIntegrationControl(repositoryId, 'blocked', candidateSha, 'Local develop moved, but the GitHub push failed');
+      appendLog(id, `GitHub push failed (${pushed.error}); local develop stayed on ${candidateSha}.`);
+    }
+    releaseAutoMerge(id);
+    clearRepoCache();
+    return;
+  }
+  execFileSync('git', [`--git-dir=${bareRepo}`, 'update-ref', 'refs/remotes/origin/develop', candidateSha]);
+  if (headSha) {
+    dropMergedBranch(bareRepo, branch, headSha, id);
+  }
+  markIntegrated(id);
+  clearRepoCache();
+  appendLog(id, `Pushed ${candidateSha} to GitHub develop. GitHub runs the full suite.`);
+}
+
 export async function integrate(id: string): Promise<void> {
   const initial = getRun(id);
   if (initial?.target !== 'develop') {
@@ -184,31 +239,7 @@ export async function integrate(id: string): Promise<void> {
       run.candidateSha &&
       candidateHas(repository.barePath, run.candidateSha, '.local-ci/workflows/develop-tests.yml')
     ) {
-      setIntegrationControl(run.repository, 'frozen', run.candidateSha, 'Full develop suite');
-      try {
-        recordCandidate({
-          repository: run.repository,
-          ref: run.ref,
-          oldSha: base,
-          newSha: run.candidateSha,
-          baseSha: base,
-          headSha: run.headSha,
-          candidateSha: run.candidateSha,
-          target: 'develop-gate',
-          status: 'queued',
-          taskId: run.taskId,
-        });
-        releaseAutoMerge(id);
-        appendLog(id, `Queued full develop suite for ${run.candidateSha} before moving develop.`);
-      } catch (error) {
-        releaseAutoMerge(id);
-        setIntegrationControl(
-          run.repository,
-          'blocked',
-          run.candidateSha,
-          `Could not enqueue full develop suite: ${String(error)}`,
-        );
-      }
+      await publishDevelop(id, repository.id, repository.barePath, base, run.candidateSha, run.branch, run.headSha);
       return;
     }
     const smokeConfigured = (() => {

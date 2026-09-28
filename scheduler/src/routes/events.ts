@@ -1,11 +1,10 @@
-import { execFileSync } from 'node:child_process';
 import type { FastifyInstance } from 'fastify';
 import { integrationControl, recordCandidate } from '../db.ts';
 import { createTemporaryMerge, mergeBranchMessage } from '../git-merge.ts';
 import { readBranchSha, readDevelopSha, retainCandidate } from '../git-repo.ts';
 import { withRepositoryLock } from '../integration.ts';
 import { branchSync, synchronizeDevelop } from '../synchronization.ts';
-import { asPush, DELETED, MAX_BRANCH_DRIFT, type PushBody, repositoryFor } from './context.ts';
+import { asPush, DELETED, type PushBody, repositoryFor } from './context.ts';
 
 export function registerEventsRoute(app: FastifyInstance) {
   app.post('/events', async (request, reply) => {
@@ -49,23 +48,6 @@ export function registerEventsRoute(app: FastifyInstance) {
           candidateSha: null,
           status: 'failed',
           logLine: 'refs/heads/develop is missing. Connect the repository in the dashboard.',
-        });
-        return reply.code(201).send({ run });
-      }
-
-      const behind = Number(
-        execFileSync('git', [`--git-dir=${repoPath}`, 'rev-list', '--count', `${parsed.newSha}..${developSha}`], {
-          encoding: 'utf8',
-        }).trim(),
-      );
-      if (behind > MAX_BRANCH_DRIFT) {
-        const run = recordCandidate({
-          ...parsed,
-          baseSha: developSha,
-          headSha: parsed.newSha,
-          candidateSha: null,
-          status: 'failed',
-          logLine: `branch is ${behind} commits behind develop; sync/rebase is required before validation (limit ${MAX_BRANCH_DRIFT})`,
         });
         return reply.code(201).send({ run });
       }
