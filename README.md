@@ -8,9 +8,10 @@ Install Git, Node 24+, Docker Engine/Desktop, and act. Start the Docker daemon f
 
     npm ci --prefix scheduler
     npm ci --prefix dashboard
+    npm install
     npm run dev
 
-Open http://127.0.0.1:6001. One command starts the API and rebuilds the dashboard as files change. For a built run use npm start. The server binds to loopback by default.
+Open http://127.0.0.1:6001. One command starts the API and rebuilds the dashboard as files change. For a built run use npm start. The server binds to loopback by default. `npm install` at the repository root installs Biome and a pre-commit hook. The hook formats and fixes staged JavaScript, TypeScript, CSS, and JSON before the commit is created.
 
 For Docker Compose, set the absolute path so the host Docker daemon and act can mount the same workspace:
 

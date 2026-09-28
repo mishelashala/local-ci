@@ -1,17 +1,17 @@
-import { createContext, useCallback, useContext, useState, type ReactNode } from 'react'
-import { Alert, Snackbar } from '@mui/material'
+import { Alert, Snackbar } from '@mui/material';
+import { createContext, type ReactNode, useCallback, useContext, useState } from 'react';
 
-export type ToastSeverity = 'success' | 'error' | 'warning' | 'info'
+export type ToastSeverity = 'success' | 'error' | 'warning' | 'info';
 
-type Toast = { id: number; severity: ToastSeverity; message: string }
+type Toast = { id: number; severity: ToastSeverity; message: string };
 
-const ToastContext = createContext<(severity: ToastSeverity, message: string) => void>(() => {})
+const ToastContext = createContext<(severity: ToastSeverity, message: string) => void>(() => {});
 
 export function ToastProvider({ children }: { children: ReactNode }) {
-  const [toast, setToast] = useState<Toast | null>(null)
+  const [toast, setToast] = useState<Toast | null>(null);
   const notify = useCallback((severity: ToastSeverity, message: string) => {
-    setToast({ id: Date.now(), severity, message })
-  }, [])
+    setToast({ id: Date.now(), severity, message });
+  }, []);
   return (
     <ToastContext.Provider value={notify}>
       {children}
@@ -20,8 +20,8 @@ export function ToastProvider({ children }: { children: ReactNode }) {
         open={toast !== null}
         autoHideDuration={toast?.severity === 'error' ? 8000 : 4500}
         onClose={(_event, reason) => {
-          if (reason === 'clickaway') return
-          setToast(null)
+          if (reason === 'clickaway') return;
+          setToast(null);
         }}
         anchorOrigin={{ vertical: 'bottom', horizontal: 'center' }}
       >
@@ -35,9 +35,9 @@ export function ToastProvider({ children }: { children: ReactNode }) {
         </Alert>
       </Snackbar>
     </ToastContext.Provider>
-  )
+  );
 }
 
 export function useToast() {
-  return useContext(ToastContext)
+  return useContext(ToastContext);
 }

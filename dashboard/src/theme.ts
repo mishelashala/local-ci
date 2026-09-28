@@ -1,9 +1,9 @@
-import { createTheme } from '@mui/material/styles'
+import { createTheme } from '@mui/material/styles';
 
-export type ColorMode = 'light' | 'dark'
+export type ColorMode = 'light' | 'dark';
 
 export function createCiTheme(mode: ColorMode) {
-  const dark = mode === 'dark'
+  const dark = mode === 'dark';
   return createTheme({
     palette: {
       mode,
@@ -14,9 +14,7 @@ export function createCiTheme(mode: ColorMode) {
       warning: { main: dark ? '#d29922' : '#9a6700' },
       info: { main: dark ? '#58a6ff' : '#0969da' },
       divider: dark ? '#30363d' : '#d0d7de',
-      text: dark
-        ? { primary: '#e6edf3', secondary: '#8b949e' }
-        : { primary: '#1f2328', secondary: '#656d76' },
+      text: dark ? { primary: '#e6edf3', secondary: '#8b949e' } : { primary: '#1f2328', secondary: '#656d76' },
     },
     typography: {
       fontFamily: '"IBM Plex Sans", "Segoe UI", sans-serif',
@@ -34,5 +32,5 @@ export function createCiTheme(mode: ColorMode) {
       },
       MuiTooltip: { styleOverrides: { tooltip: { fontSize: 12 } } },
     },
-  })
+  });
 }

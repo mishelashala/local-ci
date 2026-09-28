@@ -1,4 +1,4 @@
-import { integer, sqliteTable, text } from 'drizzle-orm/sqlite-core'
+import { integer, sqliteTable, text } from 'drizzle-orm/sqlite-core';
 
 export const runs = sqliteTable('runs', {
   id: text('id').primaryKey(),
@@ -21,7 +21,7 @@ export const runs = sqliteTable('runs', {
   autoMerge: integer('auto_merge').notNull().default(0),
   integratedAt: integer('integrated_at'),
   taskId: text('task_id'),
-})
+});
 
 export const logs = sqliteTable('logs', {
   id: integer('id').primaryKey({ autoIncrement: true }),
@@ -29,7 +29,7 @@ export const logs = sqliteTable('logs', {
   seq: integer('seq').notNull(),
   line: text('line').notNull(),
   createdAt: integer('created_at').notNull(),
-})
+});
 
 export const repositories = sqliteTable('repositories', {
   id: text('id').primaryKey(),
@@ -37,4 +37,4 @@ export const repositories = sqliteTable('repositories', {
   barePath: text('bare_path').notNull(),
   origin: text('origin'),
   createdAt: integer('created_at').notNull(),
-})
+});

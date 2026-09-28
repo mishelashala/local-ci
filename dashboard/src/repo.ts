@@ -3,4 +3,4 @@ export const REPO = {
   barePath: '~/ci/repos/ledger.git',
   workflow: '.github/workflows/ci.yml',
   concurrency: 1,
-}
+};

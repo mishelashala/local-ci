@@ -1,6 +1,6 @@
-import type { ReactNode } from 'react'
-import { Box, Chip, Skeleton, Tooltip, Typography } from '@mui/material'
-import { mono } from './format'
+import { Box, Chip, Skeleton, Tooltip, Typography } from '@mui/material';
+import type { ReactNode } from 'react';
+import { mono } from './format';
 
 export function Panel({
   title,
@@ -9,11 +9,11 @@ export function Panel({
   fill = false,
   scroll = true,
 }: {
-  title: string
-  action?: ReactNode
-  children: ReactNode
-  fill?: boolean
-  scroll?: boolean
+  title: string;
+  action?: ReactNode;
+  children: ReactNode;
+  fill?: boolean;
+  scroll?: boolean;
 }) {
   return (
     <Box
@@ -48,7 +48,7 @@ export function Panel({
       </Box>
       <Box sx={{ flex: fill ? 1 : undefined, minHeight: 0, overflow: scroll ? 'auto' : 'hidden' }}>{children}</Box>
     </Box>
-  )
+  );
 }
 
 export function RunSkeleton() {
@@ -60,11 +60,11 @@ export function RunSkeleton() {
       </Box>
       <Skeleton variant="text" width="74%" height={16} />
     </Box>
-  )
+  );
 }
 
 export function LogSkeleton() {
-  const widths = ['88%', '64%', '76%', '42%', '81%', '53%']
+  const widths = ['88%', '64%', '76%', '42%', '81%', '53%'];
   return (
     <Box sx={{ px: 1.5, py: 1 }}>
       <Box sx={{ display: 'flex', alignItems: 'center', gap: 1, mb: 1 }}>
@@ -78,17 +78,20 @@ export function LogSkeleton() {
         <Skeleton key={width} variant="text" width={width} height={16} />
       ))}
     </Box>
-  )
+  );
 }
 
 export function Sha({ value }: { value: string }) {
   return (
     <Tooltip title={value}>
-      <Box component="span" sx={{ fontFamily: mono, color: 'primary.main', fontSize: 12.5, fontVariantNumeric: 'tabular-nums' }}>
+      <Box
+        component="span"
+        sx={{ fontFamily: mono, color: 'primary.main', fontSize: 12.5, fontVariantNumeric: 'tabular-nums' }}
+      >
         {value.slice(0, 7)}
       </Box>
     </Tooltip>
-  )
+  );
 }
 
 const CHIP_COLOR: Record<string, 'success' | 'error' | 'warning' | 'info' | 'default'> = {
@@ -101,10 +104,10 @@ const CHIP_COLOR: Record<string, 'success' | 'error' | 'warning' | 'info' | 'def
   running: 'info',
   validating: 'info',
   queued: 'default',
-}
+};
 
 export function StatusChip({ status, label }: { status: string; label?: string }) {
-  const pulse = status === 'running' || status === 'validating'
+  const pulse = status === 'running' || status === 'validating';
   return (
     <Chip
       size="small"
@@ -113,10 +116,12 @@ export function StatusChip({ status, label }: { status: string; label?: string }
       label={label ?? status}
       icon={
         pulse ? (
-          <Box className="ci-pulse" sx={{ width: 6, height: 6, borderRadius: '50%', bgcolor: 'info.main', ml: '8px' }} />
+          <Box
+            className="ci-pulse"
+            sx={{ width: 6, height: 6, borderRadius: '50%', bgcolor: 'info.main', ml: '8px' }}
+          />
         ) : undefined
       }
     />
-  )
+  );
 }
-

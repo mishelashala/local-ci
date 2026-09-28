@@ -1,60 +1,71 @@
-import { useEffect, useRef, useState, type ComponentProps } from 'react'
-import { Box, Button, Chip, MenuItem, Select, Skeleton, Typography } from '@mui/material'
-import { useColorMode } from '../color-mode'
-import { formatAgo, mono, shortSha } from '../format'
-import { developMatchesGitHub, mainSha, pushDevelopSha, pushMainSha, type RepoSnapshot } from '../gates'
-import { useToast } from '../toast'
-import { LogSkeleton, Panel, RunSkeleton, Sha, StatusChip } from '../ui'
-import { ConnectDialog } from './Connect'
-import { LiveLog } from './LiveLog'
-import { Onboarding } from './Onboarding'
-import { Repositories } from './Repositories'
+import { Box, Button, Chip, MenuItem, Select, Skeleton, Typography } from '@mui/material';
+import { type ComponentProps, useEffect, useRef, useState } from 'react';
+import { useColorMode } from '../color-mode';
+import { formatAgo, mono, shortSha } from '../format';
+import { developMatchesGitHub, mainSha, pushDevelopSha, pushMainSha, type RepoSnapshot } from '../gates';
+import { useToast } from '../toast';
+import { LogSkeleton, Panel, RunSkeleton, Sha, StatusChip } from '../ui';
+import { ConnectDialog } from './Connect';
+import { LiveLog } from './LiveLog';
+import { Onboarding } from './Onboarding';
+import { Repositories } from './Repositories';
 
 type Run = {
-  id: string
-  repository: string
-  branch: string
-  oldSha: string
-  newSha: string
-  status: string
-  workflow: string
-  createdAt: number
-  startedAt: number | null
-  finishedAt: number | null
-  exitCode: number | null
-  baseSha: string | null
-  headSha: string | null
-  candidateSha: string | null
-  target: string | null
-  integratedAt: number | null
-  taskId: string | null
-}
+  id: string;
+  repository: string;
+  branch: string;
+  oldSha: string;
+  newSha: string;
+  status: string;
+  workflow: string;
+  createdAt: number;
+  startedAt: number | null;
+  finishedAt: number | null;
+  exitCode: number | null;
+  baseSha: string | null;
+  headSha: string | null;
+  candidateSha: string | null;
+  target: string | null;
+  integratedAt: number | null;
+  taskId: string | null;
+};
 
-type RunInput = Omit<Run, 'startedAt' | 'finishedAt' | 'exitCode' | 'baseSha' | 'headSha' | 'candidateSha' | 'target' | 'integratedAt' | 'taskId'> & {
-  target?: string | null
-  startedAt?: number | null
-  finishedAt?: number | null
-  exitCode?: number | null
-  baseSha?: string | null
-  headSha?: string | null
-  candidateSha?: string | null
-  integratedAt?: number | null
-  taskId?: string | null
-}
+type RunInput = Omit<
+  Run,
+  | 'startedAt'
+  | 'finishedAt'
+  | 'exitCode'
+  | 'baseSha'
+  | 'headSha'
+  | 'candidateSha'
+  | 'target'
+  | 'integratedAt'
+  | 'taskId'
+> & {
+  target?: string | null;
+  startedAt?: number | null;
+  finishedAt?: number | null;
+  exitCode?: number | null;
+  baseSha?: string | null;
+  headSha?: string | null;
+  candidateSha?: string | null;
+  integratedAt?: number | null;
+  taskId?: string | null;
+};
 
-const ZERO = '0000000000000000000000000000000000000000'
+const ZERO = '0000000000000000000000000000000000000000';
 
 function repositoryQuery(): string {
-  return new URLSearchParams(window.location.search).get('repository') ?? ''
+  return new URLSearchParams(window.location.search).get('repository') ?? '';
 }
 
 function setRepositoryQuery(id: string) {
-  const url = new URL(window.location.href)
-  if (id) url.searchParams.set('repository', id)
-  else url.searchParams.delete('repository')
-  const next = `${url.pathname}${url.search}${url.hash}`
-  const current = `${window.location.pathname}${window.location.search}${window.location.hash}`
-  if (next !== current) window.history.replaceState(null, '', next)
+  const url = new URL(window.location.href);
+  if (id) url.searchParams.set('repository', id);
+  else url.searchParams.delete('repository');
+  const next = `${url.pathname}${url.search}${url.hash}`;
+  const current = `${window.location.pathname}${window.location.search}${window.location.hash}`;
+  if (next !== current) window.history.replaceState(null, '', next);
 }
 
 function normalize(run: RunInput): Run {
@@ -69,11 +80,11 @@ function normalize(run: RunInput): Run {
     target: run.target ?? null,
     integratedAt: run.integratedAt ?? null,
     taskId: run.taskId ?? null,
-  }
+  };
 }
 
 function normalizeRepo(body: RepoSnapshot): RepoSnapshot {
-  const raw = Array.isArray(body.branches) ? body.branches : []
+  const raw = Array.isArray(body.branches) ? body.branches : [];
   return {
     id: typeof body.id === 'string' ? body.id : '',
     name: typeof body.name === 'string' ? body.name : 'Repository',
@@ -81,14 +92,16 @@ function normalizeRepo(body: RepoSnapshot): RepoSnapshot {
     maxBranchDrift: Number.isInteger(body.maxBranchDrift) ? body.maxBranchDrift : 10,
     develop: body.develop ?? null,
     branches: raw.flatMap((branch) => {
-      if (!branch || typeof branch.name !== 'string' || typeof branch.sha !== 'string') return []
-      return [{
-        name: branch.name,
-        sha: branch.sha,
-        aheadOfDevelop: Number.isFinite(branch.aheadOfDevelop) ? branch.aheadOfDevelop : null,
-        behindDevelop: Number.isFinite(branch.behindDevelop) ? branch.behindDevelop : null,
-        status: branch.status ?? 'idle',
-      }]
+      if (!branch || typeof branch.name !== 'string' || typeof branch.sha !== 'string') return [];
+      return [
+        {
+          name: branch.name,
+          sha: branch.sha,
+          aheadOfDevelop: Number.isFinite(branch.aheadOfDevelop) ? branch.aheadOfDevelop : null,
+          behindDevelop: Number.isFinite(branch.behindDevelop) ? branch.behindDevelop : null,
+          status: branch.status ?? 'idle',
+        },
+      ];
     }),
     origin: body.origin ?? null,
     githubDevelop: body.githubDevelop,
@@ -96,36 +109,39 @@ function normalizeRepo(body: RepoSnapshot): RepoSnapshot {
     syncError: body.syncError ?? null,
     pendingReset: body.pendingReset ?? null,
     integration: body.integration ?? null,
-  }
+  };
 }
 
-async function postJson(path: string, payload: unknown): Promise<{ ok: boolean; status: number; body: Record<string, unknown> }> {
+async function postJson(
+  path: string,
+  payload: unknown,
+): Promise<{ ok: boolean; status: number; body: Record<string, unknown> }> {
   const response = await fetch(path, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify(payload),
-  })
-  let body: Record<string, unknown> = {}
+  });
+  let body: Record<string, unknown> = {};
   try {
-    const parsed: unknown = await response.json()
-    if (parsed !== null && typeof parsed === 'object') body = parsed as Record<string, unknown>
+    const parsed: unknown = await response.json();
+    if (parsed !== null && typeof parsed === 'object') body = parsed as Record<string, unknown>;
   } catch {
-    body = {}
+    body = {};
   }
-  return { ok: response.ok, status: response.status, body }
+  return { ok: response.ok, status: response.status, body };
 }
 
 function apiError(body: Record<string, unknown>, status: number, label: string): string {
-  return typeof body.error === 'string' && body.error.length > 0 ? body.error : `${label} (${status})`
+  return typeof body.error === 'string' && body.error.length > 0 ? body.error : `${label} (${status})`;
 }
 
 function keepGitHub(current: RepoSnapshot | undefined, next: RepoSnapshot): RepoSnapshot {
-  if (!current || current.id !== next.id) return next
+  if (!current || current.id !== next.id) return next;
   return {
     ...next,
     githubDevelop: next.githubDevelop ?? current.githubDevelop,
     githubMain: next.githubMain ?? current.githubMain,
-  }
+  };
 }
 
 function ActionButton({
@@ -136,7 +152,7 @@ function ActionButton({
   variant = 'outlined',
   ...props
 }: ComponentProps<typeof Button> & { busyKey: string; busy: string | null }) {
-  const loading = busy === busyKey
+  const loading = busy === busyKey;
   return (
     <Button
       {...props}
@@ -150,183 +166,200 @@ function ActionButton({
     >
       {children}
     </Button>
-  )
+  );
 }
 
 export function Board() {
-  const { mode, toggle } = useColorMode()
-  const notify = useToast()
-  const [runs, setRuns] = useState<Run[]>([])
-  const [runsReady, setRunsReady] = useState(false)
-  const [repo, setRepo] = useState<RepoSnapshot | null>(null)
-  const [repositories, setRepositories] = useState<RepoSnapshot[]>([])
-  const [selectedRepositoryId, setSelectedRepositoryId] = useState(repositoryQuery)
-  const [showSetup, setShowSetup] = useState(false)
-  const [showRepositories, setShowRepositories] = useState(false)
-  const [showConnect, setShowConnect] = useState(false)
-  const [repoReady, setRepoReady] = useState(false)
-  const [offline, setOffline] = useState(false)
-  const [selectedId, setSelectedId] = useState<string | null>(null)
-  const [now, setNow] = useState(() => Date.now())
-  const [busy, setBusy] = useState<string | null>(null)
-  const busyLock = useRef<string | null>(null)
-  const activeIdRef = useRef(selectedRepositoryId)
+  const { mode, toggle } = useColorMode();
+  const notify = useToast();
+  const [runs, setRuns] = useState<Run[]>([]);
+  const [runsReady, setRunsReady] = useState(false);
+  const [repo, setRepo] = useState<RepoSnapshot | null>(null);
+  const [repositories, setRepositories] = useState<RepoSnapshot[]>([]);
+  const [selectedRepositoryId, setSelectedRepositoryId] = useState(repositoryQuery);
+  const [showSetup, setShowSetup] = useState(false);
+  const [showRepositories, setShowRepositories] = useState(false);
+  const [showConnect, setShowConnect] = useState(false);
+  const [repoReady, setRepoReady] = useState(false);
+  const [offline, setOffline] = useState(false);
+  const [selectedId, setSelectedId] = useState<string | null>(null);
+  const [now, setNow] = useState(() => Date.now());
+  const [busy, setBusy] = useState<string | null>(null);
+  const busyLock = useRef<string | null>(null);
+  const activeIdRef = useRef(selectedRepositoryId);
 
   async function refreshRuns(repositoryId: string) {
-    const response = await fetch(`/api/runs?repository=${encodeURIComponent(repositoryId)}`)
-    if (!response.ok || activeIdRef.current !== repositoryId) return
-    const body = (await response.json()) as { runs?: RunInput[] }
-    if (!Array.isArray(body.runs) || activeIdRef.current !== repositoryId) return
-    setRuns(body.runs.map(normalize))
-    setRunsReady(true)
-    setOffline(false)
-    setNow(Date.now())
+    const response = await fetch(`/api/runs?repository=${encodeURIComponent(repositoryId)}`);
+    if (!response.ok || activeIdRef.current !== repositoryId) return;
+    const body = (await response.json()) as { runs?: RunInput[] };
+    if (!Array.isArray(body.runs) || activeIdRef.current !== repositoryId) return;
+    setRuns(body.runs.map(normalize));
+    setRunsReady(true);
+    setOffline(false);
+    setNow(Date.now());
   }
 
   async function refreshBoard(repositoryId: string) {
-    const reposResponse = await fetch('/api/repositories')
+    const reposResponse = await fetch('/api/repositories');
     if (reposResponse.ok && activeIdRef.current === repositoryId) {
-      const body = (await reposResponse.json()) as { repositories?: RepoSnapshot[] }
+      const body = (await reposResponse.json()) as { repositories?: RepoSnapshot[] };
       if (Array.isArray(body.repositories)) {
-        const snapshots = body.repositories.map(normalizeRepo)
-        setRepositories((current) => snapshots.map((item) => keepGitHub(current.find((entry) => entry.id === item.id), item)))
+        const snapshots = body.repositories.map(normalizeRepo);
+        setRepositories((current) =>
+          snapshots.map((item) =>
+            keepGitHub(
+              current.find((entry) => entry.id === item.id),
+              item,
+            ),
+          ),
+        );
         setRepo((current) => {
-          const next = snapshots.find((item) => item.id === repositoryId)
-          return next ? keepGitHub(current ?? undefined, next) : current
-        })
+          const next = snapshots.find((item) => item.id === repositoryId);
+          return next ? keepGitHub(current ?? undefined, next) : current;
+        });
       }
     }
-    await refreshRuns(repositoryId)
+    await refreshRuns(repositoryId);
   }
 
-  async function runAction(key: string, path: string, payload: unknown, label: string, success: string | ((body: Record<string, unknown>) => string)) {
-    if (busyLock.current) return
-    busyLock.current = key
-    setBusy(key)
-    const repositoryId = activeIdRef.current
+  async function runAction(
+    key: string,
+    path: string,
+    payload: unknown,
+    label: string,
+    success: string | ((body: Record<string, unknown>) => string),
+  ) {
+    if (busyLock.current) return;
+    busyLock.current = key;
+    setBusy(key);
+    const repositoryId = activeIdRef.current;
     try {
-      const result = await postJson(path, payload)
+      const result = await postJson(path, payload);
       if (result.ok && path === '/api/sync' && typeof result.body.id === 'string') {
-        const saved = normalizeRepo(result.body as RepoSnapshot)
-        setRepositories((items) => items.map((item) => item.id === saved.id ? saved : item))
-        if (activeIdRef.current === saved.id) setRepo(saved)
+        const saved = normalizeRepo(result.body as RepoSnapshot);
+        setRepositories((items) => items.map((item) => (item.id === saved.id ? saved : item)));
+        if (activeIdRef.current === saved.id) setRepo(saved);
       }
       if (result.ok && path === '/api/pushes' && typeof result.body.sha === 'string') {
-        const sent = payload as { branch?: string }
+        const sent = payload as { branch?: string };
         if (sent.branch === 'develop') {
-          const sha = result.body.sha
-          const mark = (item: RepoSnapshot): RepoSnapshot => item.id === repositoryId
-            ? { ...item, develop: sha, githubDevelop: { local: sha, github: sha, relation: 'same' } }
-            : item
-          setRepositories((items) => items.map(mark))
-          setRepo((current) => current ? mark(current) : current)
+          const sha = result.body.sha;
+          const mark = (item: RepoSnapshot): RepoSnapshot =>
+            item.id === repositoryId
+              ? { ...item, develop: sha, githubDevelop: { local: sha, github: sha, relation: 'same' } }
+              : item;
+          setRepositories((items) => items.map(mark));
+          setRepo((current) => (current ? mark(current) : current));
         }
       }
-      await refreshBoard(repositoryId)
-      if (result.ok) notify('success', typeof success === 'function' ? success(result.body) : success)
-      else notify('error', apiError(result.body, result.status, label))
+      await refreshBoard(repositoryId);
+      if (result.ok) notify('success', typeof success === 'function' ? success(result.body) : success);
+      else notify('error', apiError(result.body, result.status, label));
     } catch {
-      notify('error', `${label} request failed`)
+      notify('error', `${label} request failed`);
     } finally {
-      busyLock.current = null
-      setBusy(null)
+      busyLock.current = null;
+      setBusy(null);
     }
   }
 
   useEffect(() => {
-    let cancel = false
+    let cancel = false;
     void (async () => {
       try {
-        const response = await fetch('/api/repositories')
-        if (!response.ok) throw new Error(String(response.status))
-        const body = (await response.json()) as { repositories?: RepoSnapshot[] }
-        if (cancel) return
-        const snapshots = Array.isArray(body.repositories) ? body.repositories.map(normalizeRepo) : []
-        setRepositories(snapshots)
-        const active = snapshots.find((item) => item.id === selectedRepositoryId) ?? snapshots[0]
+        const response = await fetch('/api/repositories');
+        if (!response.ok) throw new Error(String(response.status));
+        const body = (await response.json()) as { repositories?: RepoSnapshot[] };
+        if (cancel) return;
+        const snapshots = Array.isArray(body.repositories) ? body.repositories.map(normalizeRepo) : [];
+        setRepositories(snapshots);
+        const active = snapshots.find((item) => item.id === selectedRepositoryId) ?? snapshots[0];
         if (!active) {
-          setRepo(null)
-          setRepoReady(true)
-          setRuns([])
-          setRunsReady(true)
-          setOffline(false)
-          return
+          setRepo(null);
+          setRepoReady(true);
+          setRuns([]);
+          setRunsReady(true);
+          setOffline(false);
+          return;
         }
-        setRepo(active)
-        setRepoReady(true)
-        const runsResponse = await fetch(`/api/runs?repository=${encodeURIComponent(active.id)}`)
-        if (!runsResponse.ok) throw new Error(String(runsResponse.status))
-        const runsBody = (await runsResponse.json()) as { runs?: RunInput[] }
-        if (cancel) return
-        if (!Array.isArray(runsBody.runs)) throw new Error('runs')
-        setRuns(runsBody.runs.map(normalize))
-        setOffline(false)
-        setRunsReady(true)
-        setNow(Date.now())
-        const synced = await fetch('/api/repositories?sync=1')
-        if (!synced.ok || cancel) return
-        const syncedBody = (await synced.json()) as { repositories?: RepoSnapshot[] }
-        if (cancel || !Array.isArray(syncedBody.repositories)) return
-        const refreshed = syncedBody.repositories.map(normalizeRepo)
-        setRepositories(refreshed)
-        setRepo(refreshed.find((item) => item.id === active.id) ?? refreshed[0] ?? null)
+        setRepo(active);
+        setRepoReady(true);
+        const runsResponse = await fetch(`/api/runs?repository=${encodeURIComponent(active.id)}`);
+        if (!runsResponse.ok) throw new Error(String(runsResponse.status));
+        const runsBody = (await runsResponse.json()) as { runs?: RunInput[] };
+        if (cancel) return;
+        if (!Array.isArray(runsBody.runs)) throw new Error('runs');
+        setRuns(runsBody.runs.map(normalize));
+        setOffline(false);
+        setRunsReady(true);
+        setNow(Date.now());
+        const synced = await fetch('/api/repositories?sync=1');
+        if (!synced.ok || cancel) return;
+        const syncedBody = (await synced.json()) as { repositories?: RepoSnapshot[] };
+        if (cancel || !Array.isArray(syncedBody.repositories)) return;
+        const refreshed = syncedBody.repositories.map(normalizeRepo);
+        setRepositories(refreshed);
+        setRepo(refreshed.find((item) => item.id === active.id) ?? refreshed[0] ?? null);
       } catch {
         if (!cancel) {
-          setOffline(true)
-          setRunsReady(true)
+          setOffline(true);
+          setRunsReady(true);
         }
       }
-    })()
+    })();
     return () => {
-      cancel = true
-    }
-  }, [selectedRepositoryId])
+      cancel = true;
+    };
+  }, [selectedRepositoryId]);
 
   useEffect(() => {
-    const onPop = () => setSelectedRepositoryId(repositoryQuery())
-    window.addEventListener('popstate', onPop)
-    return () => window.removeEventListener('popstate', onPop)
-  }, [])
+    const onPop = () => setSelectedRepositoryId(repositoryQuery());
+    window.addEventListener('popstate', onPop);
+    return () => window.removeEventListener('popstate', onPop);
+  }, []);
 
   function selectRepository(id: string) {
-    setSelectedRepositoryId(id)
-    setRepositoryQuery(id)
+    setSelectedRepositoryId(id);
+    setRepositoryQuery(id);
   }
 
   useEffect(() => {
-    if (selectedId && runs.some((run) => run.id === selectedId)) return
-    const running = runs.find((run) => run.status === 'running')
-    setSelectedId(running?.id ?? runs[0]?.id ?? null)
-  }, [runs, selectedId])
+    if (selectedId && runs.some((run) => run.id === selectedId)) return;
+    const running = runs.find((run) => run.status === 'running');
+    setSelectedId(running?.id ?? runs[0]?.id ?? null);
+  }, [runs, selectedId]);
 
-  const activeRepositoryId = repositories.find((item) => item.id === selectedRepositoryId)?.id ?? repositories[0]?.id ?? ''
-  activeIdRef.current = activeRepositoryId
+  const activeRepositoryId =
+    repositories.find((item) => item.id === selectedRepositoryId)?.id ?? repositories[0]?.id ?? '';
+  activeIdRef.current = activeRepositoryId;
 
   useEffect(() => {
-    if (!repoReady) return
-    setRepositoryQuery(activeRepositoryId)
-  }, [repoReady, activeRepositoryId])
+    if (!repoReady) return;
+    setRepositoryQuery(activeRepositoryId);
+  }, [repoReady, activeRepositoryId]);
 
-  const live = runs.some((run) => run.status === 'queued' || run.status === 'running')
-  const wasLive = useRef(false)
+  const live = runs.some((run) => run.status === 'queued' || run.status === 'running');
+  const wasLive = useRef(false);
   useEffect(() => {
-    if (!runsReady || !activeRepositoryId) return
-    const stopped = wasLive.current && !live
-    wasLive.current = live
-    if (stopped) void refreshBoard(activeRepositoryId)
-    if (!live) return
-    const id = window.setInterval(() => { void refreshRuns(activeRepositoryId) }, 2000)
-    return () => window.clearInterval(id)
-  }, [live, runsReady, activeRepositoryId])
+    if (!runsReady || !activeRepositoryId) return;
+    const stopped = wasLive.current && !live;
+    wasLive.current = live;
+    if (stopped) void refreshBoard(activeRepositoryId);
+    if (!live) return;
+    const id = window.setInterval(() => {
+      void refreshRuns(activeRepositoryId);
+    }, 2000);
+    return () => window.clearInterval(id);
+  }, [live, runsReady, activeRepositoryId]);
 
-  const running = runs.find((run) => run.status === 'running')
-  const queued = runs.filter((run) => run.status === 'queued')
-  const history = runs.filter((run) => run.status !== 'queued' && run.status !== 'running')
-  const selected = runs.find((run) => run.id === selectedId) ?? null
-  const developSha = pushDevelopSha(runs, repo)
-  const githubMainSha = pushMainSha(runs, repo)
-  const canOpenMain = mainSha(repo) !== null && repo?.develop != null && !repo?.integration
-  const mainBusy = runs.some((run) => run.target === 'main' && (run.status === 'queued' || run.status === 'running'))
+  const running = runs.find((run) => run.status === 'running');
+  const queued = runs.filter((run) => run.status === 'queued');
+  const history = runs.filter((run) => run.status !== 'queued' && run.status !== 'running');
+  const selected = runs.find((run) => run.id === selectedId) ?? null;
+  const developSha = pushDevelopSha(runs, repo);
+  const githubMainSha = pushMainSha(runs, repo);
+  const canOpenMain = mainSha(repo) !== null && repo?.develop != null && !repo?.integration;
+  const mainBusy = runs.some((run) => run.target === 'main' && (run.status === 'queued' || run.status === 'running'));
 
   const summary = (run: Run) => (
     <RunSummary
@@ -338,11 +371,29 @@ export function Board() {
       showMerge={false}
       busy={busy}
       onMerge={() => void runAction(`merge:${run.id}`, '/api/merges', { runId: run.id }, 'Merge', 'Merge finished')}
-      onCancel={() => void runAction(`cancel:${run.id}`, `/api/runs/${encodeURIComponent(run.id)}/cancel`, {}, 'Cancel', 'Run canceled')}
-      onRetry={() => void runAction(`retry:${run.id}`, `/api/runs/${encodeURIComponent(run.id)}/retry`, {}, 'Retry', 'Retry queued')}
-      onReconcile={() => void runAction(`reconcile:${run.id}`, '/api/reconciliations', { runId: run.id }, 'Reconcile', 'Develop reconciled')}
+      onCancel={() =>
+        void runAction(
+          `cancel:${run.id}`,
+          `/api/runs/${encodeURIComponent(run.id)}/cancel`,
+          {},
+          'Cancel',
+          'Run canceled',
+        )
+      }
+      onRetry={() =>
+        void runAction(`retry:${run.id}`, `/api/runs/${encodeURIComponent(run.id)}/retry`, {}, 'Retry', 'Retry queued')
+      }
+      onReconcile={() =>
+        void runAction(
+          `reconcile:${run.id}`,
+          '/api/reconciliations',
+          { runId: run.id },
+          'Reconcile',
+          'Develop reconciled',
+        )
+      }
     />
-  )
+  );
 
   if (showRepositories) {
     return (
@@ -350,38 +401,46 @@ export function Board() {
         repositories={repositories}
         activeId={activeRepositoryId}
         onOpen={(id) => {
-          selectRepository(id)
-          setRuns([])
-          setSelectedId(null)
-          setShowRepositories(false)
+          selectRepository(id);
+          setRuns([]);
+          setSelectedId(null);
+          setShowRepositories(false);
         }}
-        onAdd={() => { setShowRepositories(false); setShowSetup(true) }}
+        onAdd={() => {
+          setShowRepositories(false);
+          setShowSetup(true);
+        }}
         onRemoved={(id) => {
-          const remaining = repositories.filter((item) => item.id !== id)
-          setRepositories(remaining)
+          const remaining = repositories.filter((item) => item.id !== id);
+          setRepositories(remaining);
           if (activeRepositoryId === id) {
-            const next = remaining[0]
-            selectRepository(next?.id ?? '')
-            setRepo(next ?? null)
-            setRuns([])
-            setSelectedId(null)
-            setRunsReady(!next)
+            const next = remaining[0];
+            selectRepository(next?.id ?? '');
+            setRepo(next ?? null);
+            setRuns([]);
+            setSelectedId(null);
+            setRunsReady(!next);
           }
         }}
         onClose={() => setShowRepositories(false)}
       />
-    )
+    );
   }
 
   if (showSetup || (repoReady && !offline && repositories.length === 0)) {
-    return <Onboarding onCancel={repositories.length ? () => setShowSetup(false) : undefined} onSaved={(snapshot) => {
-      const saved = normalizeRepo(snapshot)
-      setRepo(saved)
-      setRepositories((items) => [...items.filter((item) => item.id !== saved.id), saved])
-      selectRepository(saved.id)
-      setShowSetup(false)
-      notify('success', `Connected ${saved.name}`)
-    }} />
+    return (
+      <Onboarding
+        onCancel={repositories.length ? () => setShowSetup(false) : undefined}
+        onSaved={(snapshot) => {
+          const saved = normalizeRepo(snapshot);
+          setRepo(saved);
+          setRepositories((items) => [...items.filter((item) => item.id !== saved.id), saved]);
+          selectRepository(saved.id);
+          setShowSetup(false);
+          notify('success', `Connected ${saved.name}`);
+        }}
+      />
+    );
   }
 
   return (
@@ -390,15 +449,28 @@ export function Board() {
         <Box sx={{ display: 'flex', alignItems: 'center', flexWrap: 'wrap', gap: 2 }}>
           <Typography sx={{ fontWeight: 600, fontSize: 16 }}>local ci</Typography>
           {repoReady && repositories.length > 0 && (
-            <Select size="small" value={activeRepositoryId} onChange={(event) => {
-              selectRepository(event.target.value)
-              setRuns([])
-              setSelectedId(null)
-            }} sx={{ minWidth: 190, height: 32, fontSize: 13 }}>
-              {repositories.map((item) => <MenuItem key={item.id} value={item.id}>{item.name}</MenuItem>)}
+            <Select
+              size="small"
+              value={activeRepositoryId}
+              onChange={(event) => {
+                selectRepository(event.target.value);
+                setRuns([]);
+                setSelectedId(null);
+              }}
+              sx={{ minWidth: 190, height: 32, fontSize: 13 }}
+            >
+              {repositories.map((item) => (
+                <MenuItem key={item.id} value={item.id}>
+                  {item.name}
+                </MenuItem>
+              ))}
             </Select>
           )}
-          {repo && <Button type="button" size="small" variant="outlined" onClick={() => setShowConnect(true)}>Connect</Button>}
+          {repo && (
+            <Button type="button" size="small" variant="outlined" onClick={() => setShowConnect(true)}>
+              Connect
+            </Button>
+          )}
           {!runsReady ? (
             <Skeleton variant="text" width={118} height={16} />
           ) : (
@@ -407,13 +479,98 @@ export function Board() {
             </Typography>
           )}
           <Box sx={{ flex: 1 }} />
-          {repoReady && repositories.length > 0 && <Button type="button" size="small" onClick={() => setShowRepositories(true)}>All repositories</Button>}
-          {repoReady && repositories.length > 0 && <Button type="button" size="small" onClick={() => setShowSetup(true)}>Add repository</Button>}
-          {repo && <ActionButton busyKey="sync" busy={busy} onClick={() => void runAction('sync', '/api/sync', { repository: repo.id }, 'Sync', 'GitHub sync finished')}>Sync GitHub</ActionButton>}
-          {repo?.githubDevelop?.relation === 'diverged' && <ActionButton busyKey="match-develop" busy={busy} color="warning" onClick={() => void runAction('match-develop', '/api/develop/match', { repository: repo.id }, 'Match GitHub develop', 'Local develop now matches GitHub. No new commit was created.')}>Match GitHub develop</ActionButton>}
-          {repo?.githubDevelop?.relation === 'diverged' && <ActionButton busyKey="reconcile" busy={busy} color="warning" onClick={() => void runAction('reconcile', '/api/reconcile', { repository: repo.id }, 'Validate reconciliation', 'Reconciliation queued')}>Validate reconciliation</ActionButton>}
-          {repo?.pendingReset && <ActionButton busyKey="reset" busy={busy} color="warning" onClick={() => void runAction('reset', '/api/reset-develop', { repository: repo.id }, 'Reset develop', 'Develop reset to main')}>Reset develop to main</ActionButton>}
-          {repo?.integration?.mode === 'frozen' && <ActionButton busyKey="promotion" busy={busy} onClick={() => void runAction('promotion', '/api/promotion/cancel', { repository: repo.id }, 'Release promotion', 'Promotion released')}>Release promotion</ActionButton>}
+          {repoReady && repositories.length > 0 && (
+            <Button type="button" size="small" onClick={() => setShowRepositories(true)}>
+              All repositories
+            </Button>
+          )}
+          {repoReady && repositories.length > 0 && (
+            <Button type="button" size="small" onClick={() => setShowSetup(true)}>
+              Add repository
+            </Button>
+          )}
+          {repo && (
+            <ActionButton
+              busyKey="sync"
+              busy={busy}
+              onClick={() =>
+                void runAction('sync', '/api/sync', { repository: repo.id }, 'Sync', 'GitHub sync finished')
+              }
+            >
+              Sync GitHub
+            </ActionButton>
+          )}
+          {repo?.githubDevelop?.relation === 'diverged' && (
+            <ActionButton
+              busyKey="match-develop"
+              busy={busy}
+              color="warning"
+              onClick={() =>
+                void runAction(
+                  'match-develop',
+                  '/api/develop/match',
+                  { repository: repo.id },
+                  'Match GitHub develop',
+                  'Local develop now matches GitHub. No new commit was created.',
+                )
+              }
+            >
+              Match GitHub develop
+            </ActionButton>
+          )}
+          {repo?.githubDevelop?.relation === 'diverged' && (
+            <ActionButton
+              busyKey="reconcile"
+              busy={busy}
+              color="warning"
+              onClick={() =>
+                void runAction(
+                  'reconcile',
+                  '/api/reconcile',
+                  { repository: repo.id },
+                  'Validate reconciliation',
+                  'Reconciliation queued',
+                )
+              }
+            >
+              Validate reconciliation
+            </ActionButton>
+          )}
+          {repo?.pendingReset && (
+            <ActionButton
+              busyKey="reset"
+              busy={busy}
+              color="warning"
+              onClick={() =>
+                void runAction(
+                  'reset',
+                  '/api/reset-develop',
+                  { repository: repo.id },
+                  'Reset develop',
+                  'Develop reset to main',
+                )
+              }
+            >
+              Reset develop to main
+            </ActionButton>
+          )}
+          {repo?.integration?.mode === 'frozen' && (
+            <ActionButton
+              busyKey="promotion"
+              busy={busy}
+              onClick={() =>
+                void runAction(
+                  'promotion',
+                  '/api/promotion/cancel',
+                  { repository: repo.id },
+                  'Release promotion',
+                  'Promotion released',
+                )
+              }
+            >
+              Release promotion
+            </ActionButton>
+          )}
           {!repoReady && (
             <>
               <Skeleton variant="rounded" width={150} height={30} />
@@ -421,17 +578,58 @@ export function Board() {
             </>
           )}
           {repoReady && canOpenMain && (
-            <ActionButton busyKey="main" busy={busy} disabled={mainBusy} onClick={() => void runAction('main', '/api/main', { repository: activeRepositoryId }, 'Validation', 'Validation queued')}>
+            <ActionButton
+              busyKey="main"
+              busy={busy}
+              disabled={mainBusy}
+              onClick={() =>
+                void runAction(
+                  'main',
+                  '/api/main',
+                  { repository: activeRepositoryId },
+                  'Validation',
+                  'Validation queued',
+                )
+              }
+            >
               Validate develop → main
             </ActionButton>
           )}
           {repoReady && githubMainSha && (
-            <ActionButton busyKey="push-main" busy={busy} variant="contained" onClick={() => void runAction('push-main', '/api/pushes', { repository: activeRepositoryId, branch: 'main' }, 'Push', (body) => typeof body.remote === 'string' ? body.remote : 'Pushed main to GitHub')}>
+            <ActionButton
+              busyKey="push-main"
+              busy={busy}
+              variant="contained"
+              onClick={() =>
+                void runAction(
+                  'push-main',
+                  '/api/pushes',
+                  { repository: activeRepositoryId, branch: 'main' },
+                  'Push',
+                  (body) => (typeof body.remote === 'string' ? body.remote : 'Pushed main to GitHub'),
+                )
+              }
+            >
               Push main to GitHub {shortSha(githubMainSha)}
             </ActionButton>
           )}
           {repoReady && developSha && (
-            <ActionButton busyKey="push-develop" busy={busy} variant="contained" disabled={developMatchesGitHub(repo)} title={developMatchesGitHub(repo) ? 'GitHub develop is already this commit' : undefined} onClick={() => void runAction('push-develop', '/api/pushes', { repository: activeRepositoryId, branch: 'develop' }, 'Push', (body) => typeof body.remote === 'string' ? body.remote : 'Pushed develop to GitHub')}>
+            <ActionButton
+              busyKey="push-develop"
+              busy={busy}
+              variant="contained"
+              disabled={developMatchesGitHub(repo)}
+              title={developMatchesGitHub(repo) ? 'GitHub develop is already this commit' : undefined}
+              onClick={() =>
+                void runAction(
+                  'push-develop',
+                  '/api/pushes',
+                  { repository: activeRepositoryId, branch: 'develop' },
+                  'Push',
+                  (body) => (typeof body.remote === 'string' ? body.remote : 'Pushed develop to GitHub'),
+                )
+              }
+            >
               Push to develop {shortSha(developSha)}
             </ActionButton>
           )}
@@ -442,39 +640,79 @@ export function Board() {
             127.0.0.1
           </Typography>
         </Box>
-        {repo?.syncError && <Typography variant="caption" color="error.main" sx={{ display: 'block' }}>GitHub sync: {repo.syncError}</Typography>}
-        {repo?.githubDevelop && <Typography variant="caption" color={repo.githubDevelop.relation === 'diverged' ? 'error.main' : 'text.secondary'} sx={{ display: 'block' }}>
-          GitHub develop: {repo.githubDevelop.relation} · local {shortSha(repo.githubDevelop.local ?? '')} · GitHub {shortSha(repo.githubDevelop.github ?? '')}
-        </Typography>}
-        {repo?.integration && <Typography variant="caption" color={repo.integration.mode === 'blocked' ? 'error.main' : 'warning.main'} sx={{ display: 'block' }}>
-          Integration {repo.integration.mode}: {repo.integration.reason}. Agent candidates wait for this repository.
-        </Typography>}
+        {repo?.syncError && (
+          <Typography variant="caption" color="error.main" sx={{ display: 'block' }}>
+            GitHub sync: {repo.syncError}
+          </Typography>
+        )}
+        {repo?.githubDevelop && (
+          <Typography
+            variant="caption"
+            color={repo.githubDevelop.relation === 'diverged' ? 'error.main' : 'text.secondary'}
+            sx={{ display: 'block' }}
+          >
+            GitHub develop: {repo.githubDevelop.relation} · local {shortSha(repo.githubDevelop.local ?? '')} · GitHub{' '}
+            {shortSha(repo.githubDevelop.github ?? '')}
+          </Typography>
+        )}
+        {repo?.integration && (
+          <Typography
+            variant="caption"
+            color={repo.integration.mode === 'blocked' ? 'error.main' : 'warning.main'}
+            sx={{ display: 'block' }}
+          >
+            Integration {repo.integration.mode}: {repo.integration.reason}. Agent candidates wait for this repository.
+          </Typography>
+        )}
       </Box>
       <ConnectDialog repo={repo} open={showConnect} onClose={() => setShowConnect(false)} />
 
-      <Box sx={{ flex: 1, minHeight: 0, display: 'grid', gridTemplateColumns: 'minmax(360px, 460px) minmax(0, 1fr)', gap: 1.25, p: 1.25 }}>
-        <Box sx={{ minHeight: 0, display: 'grid', gridTemplateRows: 'auto auto minmax(120px, auto) minmax(0, 1fr)', gap: 1.25 }}>
-          <Panel title="Runner" action={<Typography variant="caption" color="text.secondary">concurrency 1</Typography>}>
+      <Box
+        sx={{
+          flex: 1,
+          minHeight: 0,
+          display: 'grid',
+          gridTemplateColumns: 'minmax(360px, 460px) minmax(0, 1fr)',
+          gap: 1.25,
+          p: 1.25,
+        }}
+      >
+        <Box
+          sx={{
+            minHeight: 0,
+            display: 'grid',
+            gridTemplateRows: 'auto auto minmax(120px, auto) minmax(0, 1fr)',
+            gap: 1.25,
+          }}
+        >
+          <Panel
+            title="Runner"
+            action={
+              <Typography variant="caption" color="text.secondary">
+                concurrency 1
+              </Typography>
+            }
+          >
             {!runsReady && <RunSkeleton />}
             {runsReady && (
-            <Box sx={{ px: 1.5, py: 1.25 }}>
-              {offline && (
-                <Typography variant="caption" color="warning.main">
-                  Scheduler is not answering on 127.0.0.1:6001.
-                </Typography>
-              )}
-              {!offline && running && summary(running)}
-              {!offline && !running && (
-                <>
-                  <Typography sx={{ fontWeight: 600 }}>Runner idle</Typography>
-                  <Typography variant="caption" color="text.secondary" sx={{ display: 'block' }}>
-                    {history[0]
-                      ? `Last run ${history[0].branch} ${history[0].status}`
-                      : 'No runs yet. git push ci feat/branch-name'}
+              <Box sx={{ px: 1.5, py: 1.25 }}>
+                {offline && (
+                  <Typography variant="caption" color="warning.main">
+                    Scheduler is not answering on 127.0.0.1:6001.
                   </Typography>
-                </>
-              )}
-            </Box>
+                )}
+                {!offline && running && summary(running)}
+                {!offline && !running && (
+                  <>
+                    <Typography sx={{ fontWeight: 600 }}>Runner idle</Typography>
+                    <Typography variant="caption" color="text.secondary" sx={{ display: 'block' }}>
+                      {history[0]
+                        ? `Last run ${history[0].branch} ${history[0].status}`
+                        : 'No runs yet. git push ci feat/branch-name'}
+                    </Typography>
+                  </>
+                )}
+              </Box>
             )}
           </Panel>
 
@@ -484,7 +722,9 @@ export function Board() {
               !runsReady ? (
                 <Skeleton variant="text" width={16} height={14} />
               ) : (
-                <Typography variant="caption" color="text.secondary">{offline ? 'offline' : queued.length}</Typography>
+                <Typography variant="caption" color="text.secondary">
+                  {offline ? 'offline' : queued.length}
+                </Typography>
               )
             }
           >
@@ -502,16 +742,89 @@ export function Board() {
             {queued.map(summary)}
           </Panel>
 
-          <Panel title="Branches" action={<Typography variant="caption" color="text.secondary">{repo?.maxBranchDrift ?? 10} commit drift limit</Typography>}>
-            {!repo?.branches.length && <Typography variant="caption" color="text.secondary" sx={{ display: 'block', px: 1.5, py: 1.25 }}>No branches in this CI repository yet.</Typography>}
+          <Panel
+            title="Branches"
+            action={
+              <Typography variant="caption" color="text.secondary">
+                {repo?.maxBranchDrift ?? 10} commit drift limit
+              </Typography>
+            }
+          >
+            {!repo?.branches.length && (
+              <Typography variant="caption" color="text.secondary" sx={{ display: 'block', px: 1.5, py: 1.25 }}>
+                No branches in this CI repository yet.
+              </Typography>
+            )}
             {repo?.branches.map((branch) => (
-              <Box key={branch.name} sx={{ px: 1.5, py: 0.8, display: 'flex', alignItems: 'center', gap: 1, borderBottom: '1px solid', borderColor: 'divider' }}>
-                <Typography sx={{ fontSize: 13, fontWeight: 600, flex: 1 }} noWrap>{branch.name}</Typography>
-                <Typography variant="caption" color="text.secondary" sx={{ fontFamily: mono }}><Sha value={branch.sha} /></Typography>
-                {branch.behindDevelop !== null && branch.name !== 'develop' && <Typography variant="caption" color={branch.behindDevelop > (repo?.maxBranchDrift ?? 10) ? 'error.main' : 'text.secondary'}>{branch.behindDevelop} behind</Typography>}
-                <Chip size="small" label={branch.status.replaceAll('-', ' ')} color={branch.status === 'ready-to-merge' || branch.status === 'ready-to-deploy' ? 'success' : branch.status === 'failed' || branch.status === 'sync-required' ? 'error' : 'default'} />
-                {branch.name !== 'main' && branch.name !== 'develop' && branch.status !== 'sync-required' && <ActionButton busyKey={`run:${branch.name}`} busy={busy} onClick={() => void runAction(`run:${branch.name}`, '/api/runs/manual', { repository: repo.id, branch: branch.name }, 'Enqueue', 'Run queued')}>Run</ActionButton>}
-                {branch.status === 'sync-required' && <Button size="small" variant="outlined" disabled={busy !== null} onClick={() => notify('warning', `Sync ${branch.name} in your working copy: git fetch ci develop && git rebase ci/develop && git push --force-with-lease ci ${branch.name}`)}>Sync/Rebase</Button>}
+              <Box
+                key={branch.name}
+                sx={{
+                  px: 1.5,
+                  py: 0.8,
+                  display: 'flex',
+                  alignItems: 'center',
+                  gap: 1,
+                  borderBottom: '1px solid',
+                  borderColor: 'divider',
+                }}
+              >
+                <Typography sx={{ fontSize: 13, fontWeight: 600, flex: 1 }} noWrap>
+                  {branch.name}
+                </Typography>
+                <Typography variant="caption" color="text.secondary" sx={{ fontFamily: mono }}>
+                  <Sha value={branch.sha} />
+                </Typography>
+                {branch.behindDevelop !== null && branch.name !== 'develop' && (
+                  <Typography
+                    variant="caption"
+                    color={branch.behindDevelop > (repo?.maxBranchDrift ?? 10) ? 'error.main' : 'text.secondary'}
+                  >
+                    {branch.behindDevelop} behind
+                  </Typography>
+                )}
+                <Chip
+                  size="small"
+                  label={branch.status.replaceAll('-', ' ')}
+                  color={
+                    branch.status === 'ready-to-merge' || branch.status === 'ready-to-deploy'
+                      ? 'success'
+                      : branch.status === 'failed' || branch.status === 'sync-required'
+                        ? 'error'
+                        : 'default'
+                  }
+                />
+                {branch.name !== 'main' && branch.name !== 'develop' && branch.status !== 'sync-required' && (
+                  <ActionButton
+                    busyKey={`run:${branch.name}`}
+                    busy={busy}
+                    onClick={() =>
+                      void runAction(
+                        `run:${branch.name}`,
+                        '/api/runs/manual',
+                        { repository: repo.id, branch: branch.name },
+                        'Enqueue',
+                        'Run queued',
+                      )
+                    }
+                  >
+                    Run
+                  </ActionButton>
+                )}
+                {branch.status === 'sync-required' && (
+                  <Button
+                    size="small"
+                    variant="outlined"
+                    disabled={busy !== null}
+                    onClick={() =>
+                      notify(
+                        'warning',
+                        `Sync ${branch.name} in your working copy: git fetch ci develop && git rebase ci/develop && git push --force-with-lease ci ${branch.name}`,
+                      )
+                    }
+                  >
+                    Sync/Rebase
+                  </Button>
+                )}
               </Box>
             ))}
           </Panel>
@@ -538,7 +851,9 @@ export function Board() {
           <Panel title="Logs" fill scroll={false}>
             <LogSkeleton />
           </Panel>
-        ) : selected ? <LiveLog runId={selected.id} /> : (
+        ) : selected ? (
+          <LiveLog runId={selected.id} />
+        ) : (
           <Panel title="Logs" fill>
             <Typography variant="caption" color="text.secondary" sx={{ display: 'block', px: 1.5, py: 1.25 }}>
               No run selected
@@ -547,7 +862,7 @@ export function Board() {
         )}
       </Box>
     </Box>
-  )
+  );
 }
 
 function RunSummary({
@@ -562,16 +877,16 @@ function RunSummary({
   onRetry,
   onReconcile,
 }: {
-  run: Run
-  now: number
-  selected: boolean
-  onSelect: () => void
-  showMerge: boolean
-  busy: string | null
-  onMerge: () => void
-  onCancel: () => void
-  onRetry: () => void
-  onReconcile: () => void
+  run: Run;
+  now: number;
+  selected: boolean;
+  onSelect: () => void;
+  showMerge: boolean;
+  busy: string | null;
+  onMerge: () => void;
+  onCancel: () => void;
+  onRetry: () => void;
+  onReconcile: () => void;
 }) {
   return (
     <Box
@@ -592,7 +907,8 @@ function RunSummary({
         </Typography>
       </Box>
       <Typography variant="caption" color="text.secondary" sx={{ display: 'block' }}>
-        {run.repository} · {run.taskId ?? run.branch} · {run.oldSha === ZERO ? 'new branch' : 'update'} · <Sha value={run.newSha} /> · {formatAgo(now, run.createdAt)}
+        {run.repository} · {run.taskId ?? run.branch} · {run.oldSha === ZERO ? 'new branch' : 'update'} ·{' '}
+        <Sha value={run.newSha} /> · {formatAgo(now, run.createdAt)}
         {run.exitCode !== null ? ` · exit ${run.exitCode}` : ''}
         {run.integratedAt ? ' · integrated locally' : ''}
       </Typography>
@@ -613,18 +929,44 @@ function RunSummary({
       )}
       {showMerge && (
         <Box sx={{ mt: 0.75 }} onClick={(event) => event.stopPropagation()}>
-          <ActionButton busyKey={`merge:${run.id}`} busy={busy} variant="contained" color="success" onClick={() => { onSelect(); onMerge() }}>
+          <ActionButton
+            busyKey={`merge:${run.id}`}
+            busy={busy}
+            variant="contained"
+            color="success"
+            onClick={() => {
+              onSelect();
+              onMerge();
+            }}
+          >
             Merge to develop
           </ActionButton>
         </Box>
       )}
-      {(run.status === 'queued' || run.status === 'running' || run.status === 'failed' || run.status === 'canceled' || run.status === 'stale' || (run.target === 'reconcile' && run.status === 'passed')) && (
+      {(run.status === 'queued' ||
+        run.status === 'running' ||
+        run.status === 'failed' ||
+        run.status === 'canceled' ||
+        run.status === 'stale' ||
+        (run.target === 'reconcile' && run.status === 'passed')) && (
         <Box sx={{ mt: 0.5 }} onClick={(event) => event.stopPropagation()}>
-          {(run.status === 'queued' || run.status === 'running') && <ActionButton busyKey={`cancel:${run.id}`} busy={busy} color="warning" onClick={onCancel}>Cancel</ActionButton>}
-          {(run.status === 'failed' || run.status === 'canceled' || run.status === 'stale') && run.candidateSha && <ActionButton busyKey={`retry:${run.id}`} busy={busy} onClick={onRetry}>Retry</ActionButton>}
-          {run.target === 'reconcile' && run.status === 'passed' && <ActionButton busyKey={`reconcile:${run.id}`} busy={busy} color="success" onClick={onReconcile}>Reconcile develop</ActionButton>}
+          {(run.status === 'queued' || run.status === 'running') && (
+            <ActionButton busyKey={`cancel:${run.id}`} busy={busy} color="warning" onClick={onCancel}>
+              Cancel
+            </ActionButton>
+          )}
+          {(run.status === 'failed' || run.status === 'canceled' || run.status === 'stale') && run.candidateSha && (
+            <ActionButton busyKey={`retry:${run.id}`} busy={busy} onClick={onRetry}>
+              Retry
+            </ActionButton>
+          )}
+          {run.target === 'reconcile' && run.status === 'passed' && (
+            <ActionButton busyKey={`reconcile:${run.id}`} busy={busy} color="success" onClick={onReconcile}>
+              Reconcile develop
+            </ActionButton>
+          )}
         </Box>
       )}
     </Box>
-  )
+  );
 }
