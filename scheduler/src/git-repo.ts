@@ -67,12 +67,13 @@ async function gitText(bareRepo: string, args: string[]): Promise<string> {
 const snapshotInflight = new Map<string, Promise<RepoSnapshot>>()
 const snapshotCache = new Map<string, { at: number; value: RepoSnapshot }>()
 
-export function currentRepoSnapshot(bareRepo: string, id: string, name = id): Promise<RepoSnapshot> {
+export function currentRepoSnapshot(bareRepo: string, id: string, name = id, counts = true): Promise<RepoSnapshot> {
+  if (!counts) return readRepoSnapshotFast(bareRepo, id, name, false)
   const cached = snapshotCache.get(bareRepo)
   if (cached && Date.now() - cached.at < 1000) return Promise.resolve(cached.value)
   const inflight = snapshotInflight.get(bareRepo)
   if (inflight) return inflight
-  const next = readRepoSnapshotFast(bareRepo, id, name)
+  const next = readRepoSnapshotFast(bareRepo, id, name, true)
     .then((value) => {
       snapshotCache.set(bareRepo, { at: Date.now(), value })
       return value
@@ -84,7 +85,7 @@ export function currentRepoSnapshot(bareRepo: string, id: string, name = id): Pr
   return next
 }
 
-async function readRepoSnapshotFast(bareRepo: string, id: string, name: string): Promise<RepoSnapshot> {
+async function readRepoSnapshotFast(bareRepo: string, id: string, name: string, counts: boolean): Promise<RepoSnapshot> {
   const [develop, branchText, origin] = await Promise.all([
     gitText(bareRepo, ['rev-parse', '--verify', '--end-of-options', 'refs/heads/develop']).then(asSha).catch(() => null),
     gitText(bareRepo, ['for-each-ref', '--format=%(refname:short)%09%(objectname)', 'refs/heads']).catch(() => ''),
@@ -102,13 +103,13 @@ async function readRepoSnapshotFast(bareRepo: string, id: string, name: string):
     if (!sha) return []
     return [{ name, sha }]
   })
-  const branches = await Promise.all(refs.map(async ({ name, sha }) => {
+  const branches = counts ? await Promise.all(refs.map(async ({ name, sha }) => {
     const [ahead, behind] = await Promise.all([
       develop ? gitText(bareRepo, ['rev-list', '--count', `${develop}..${sha}`]).then((n) => Number(n.trim())).catch(() => null) : Promise.resolve(null),
       develop ? gitText(bareRepo, ['rev-list', '--count', `${sha}..${develop}`]).then((n) => Number(n.trim())).catch(() => null) : Promise.resolve(null),
     ])
     return { name, sha, aheadOfDevelop: ahead, behindDevelop: behind, status: 'idle' as const }
-  }))
+  })) : refs.map(({ name, sha }) => ({ name, sha, aheadOfDevelop: null, behindDevelop: null, status: 'idle' as const }))
   return { id, name, barePath: bareRepo, maxBranchDrift: 10, develop, branches, origin }
 }
 

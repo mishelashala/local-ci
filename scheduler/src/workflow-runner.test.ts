@@ -4,7 +4,92 @@ import { mkdtempSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'nod
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { test } from 'node:test'
-import { ActWorkflowRunner } from './workflow-runner.ts'
+import { ActWorkflowRunner, actContainerPath, actEnvContents, containerArchitecture, ghContainerOption, remapHostPorts } from './workflow-runner.ts'
+
+test('container architecture matches GitHub ubuntu-latest unless configured', () => {
+  assert.equal(containerArchitecture(''), 'linux/amd64')
+  assert.equal(containerArchitecture('   '), 'linux/amd64')
+  assert.equal(containerArchitecture(undefined), 'linux/amd64')
+  assert.equal(containerArchitecture('linux/arm64'), 'linux/arm64')
+})
+
+test('job env mounts gh and keeps the token out of the command line', () => {
+  const contents = actEnvContents('/usr/bin', 'secret-token', 'PATH=/old\nGH_TOKEN=old\nFEATURE=1\n')
+  assert.match(contents, /^FEATURE=1\nPATH=\/usr\/bin\nGH_TOKEN=secret-token\nGITHUB_TOKEN=secret-token\n$/)
+  assert.doesNotMatch(contents, /\/old/)
+  const option = ghContainerOption('/opt/ci/gh')
+  assert.equal(option, '--volume /opt/ci/gh:/usr/local/bin/gh:ro')
+  assert.doesNotMatch(option, /secret-token/)
+})
+
+test('act PATH keeps both node architectures', () => {
+  const path = actContainerPath('/opt/acttoolcache/node/24.19.0/arm64/bin:/usr/bin')
+  assert.match(path, /^\/opt\/acttoolcache\/node\/24\.19\.0\/x64\/bin:/)
+  assert.match(path, /\/opt\/acttoolcache\/node\/24\.19\.0\/arm64\/bin/)
+  assert.match(path, /\/usr\/bin:/)
+})
+
+test('busy workflow host ports move to a free port', () => {
+  const source = [
+    'jobs:',
+    '  tests:',
+    '    services:',
+    '      postgres:',
+    '        ports:',
+    '          - 5432:5432',
+    '    steps:',
+    '      - run: echo ok',
+    '        env:',
+    '          DATABASE_URL: postgres://root:root@localhost:5432/test_db',
+  ].join('\n')
+  const remapped = remapHostPorts(source, (port) => port === 5432, () => 55123)
+  assert.equal(remapped.changes.length, 1)
+  assert.deepEqual(remapped.changes[0], { from: 5432, to: 55123 })
+  assert.match(remapped.text, /55123:5432/)
+  assert.doesNotMatch(remapped.text, /55123:55123/)
+  assert.match(remapped.text, /localhost:55123/)
+  const free = remapHostPorts(source, () => false, () => 55123)
+  assert.equal(free.text, source)
+  assert.deepEqual(free.changes, [])
+})
+
+test('jobs that publish the same host port each get their own', () => {
+  const source = [
+    'jobs:',
+    '  first:',
+    '    services:',
+    '      postgres:',
+    '        ports:',
+    '          - 5432:5432',
+    '    steps:',
+    '      - run: echo ok',
+    '        env:',
+    '          DATABASE_URL: postgres://root:root@localhost:5432/test_db',
+    '  second:',
+    '    services:',
+    '      postgres:',
+    '        ports:',
+    '          - 5432:5432',
+    '    steps:',
+    '      - run: echo ok',
+    '        env:',
+    '          DATABASE_URL: postgres://root:root@127.0.0.1:5432/test_db',
+  ].join('\n')
+  let next = 55123
+  const remapped = remapHostPorts(source, (port) => port === 5432, () => next++)
+  assert.deepEqual(remapped.changes, [{ from: 5432, to: 55123 }, { from: 5432, to: 55124 }])
+  assert.match(remapped.text, /55123:5432/)
+  assert.match(remapped.text, /55124:5432/)
+  assert.match(remapped.text, /localhost:55123/)
+  assert.match(remapped.text, /127\.0\.0\.1:55124/)
+  assert.doesNotMatch(remapped.text, /5432:5432/)
+  next = 55123
+  const shared = remapHostPorts(source, () => false, () => next++)
+  assert.match(shared.text, /5432:5432/)
+  assert.match(shared.text, /55123:5432/)
+  assert.match(shared.text, /localhost:5432/)
+  assert.match(shared.text, /127\.0\.0\.1:55123/)
+})
 
 test('feature push uses local PR workflows and the exact merge event', async () => {
   const root = mkdtempSync(join(tmpdir(), 'local-ci-runner-'))
@@ -55,6 +140,7 @@ test('feature push uses local PR workflows and the exact merge event', async () 
     assert.deepEqual(selected, calls.map((call) => call.args[call.args.indexOf('-W') + 1]))
     assert.deepEqual(states, selected.flatMap((path) => [`running ${path}`, `finished ${path} 0`]))
     assert(calls.every((call) => call.args[0] === 'pull_request'))
+    assert(calls.every((call) => call.args[call.args.indexOf('--container-architecture') + 1] === containerArchitecture()))
     assert.equal(calls[0].event.pull_request.head.ref, 'feat/example')
     assert.equal(calls[0].event.pull_request.base.ref, 'develop')
     assert.equal(calls[0].event.pull_request.merge_commit_sha, sha)

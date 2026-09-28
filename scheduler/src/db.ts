@@ -327,6 +327,24 @@ export function saveRepository(input: { id: string; name: string; barePath: stri
   return getRepository(input.id)
 }
 
+export function activeRunIds(repository: string) {
+  return sqlite.prepare(`SELECT id FROM runs WHERE repository = ? AND status IN ('queued', 'running')`).all(repository) as { id: string }[]
+}
+
+export function deleteRepository(id: string) {
+  const existing = getRepository(id)
+  if (!existing) return false
+  sqlite.transaction(() => {
+    sqlite.prepare(`DELETE FROM logs WHERE run_id IN (SELECT id FROM runs WHERE repository = ?)`).run(id)
+    sqlite.prepare(`DELETE FROM workflow_runs WHERE run_id IN (SELECT id FROM runs WHERE repository = ?)`).run(id)
+    sqlite.prepare(`DELETE FROM runs WHERE repository = ?`).run(id)
+    sqlite.prepare(`DELETE FROM promotions WHERE repository = ?`).run(id)
+    sqlite.prepare(`DELETE FROM integration_control WHERE repository = ?`).run(id)
+    sqlite.prepare(`DELETE FROM repositories WHERE id = ?`).run(id)
+  })()
+  return true
+}
+
 export function savePromotion(repository: string, mainSha: string, developSha: string, githubDevelopSha: string | null) {
   sqlite.prepare(`INSERT INTO promotions (repository, main_sha, develop_sha, github_develop_sha, status, created_at)
     VALUES (?, ?, ?, ?, 'pending', ?)

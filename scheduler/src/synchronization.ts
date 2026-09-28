@@ -43,16 +43,19 @@ export async function fetchGitHub(path: string, force = false): Promise<void> {
   if (pending) return pending
   if (!force && Date.now() - (lastFetch.get(path) ?? 0) < 30000) return
   const task = (async () => {
-    await execFileAsync('git', [
-      `--git-dir=${path}`, 'fetch', '--no-tags', '--prune', 'origin',
-      '+refs/heads/*:refs/remotes/origin/*',
-    ], {
-      timeout: 20000,
-      maxBuffer: 4 * 1024 * 1024,
-      env: { ...process.env, GIT_TERMINAL_PROMPT: '0' },
-    })
-    lastFetch.set(path, Date.now())
-    clearRepoCache()
+    try {
+      await execFileAsync('git', [
+        `--git-dir=${path}`, 'fetch', '--no-tags', '--prune', 'origin',
+        '+refs/heads/*:refs/remotes/origin/*',
+      ], {
+        timeout: 20000,
+        maxBuffer: 4 * 1024 * 1024,
+        env: { ...process.env, GIT_TERMINAL_PROMPT: '0' },
+      })
+      clearRepoCache()
+    } finally {
+      lastFetch.set(path, Date.now())
+    }
   })().finally(() => fetches.delete(path))
   fetches.set(path, task)
   return task

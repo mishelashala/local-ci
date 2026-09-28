@@ -1,7 +1,7 @@
 #!/bin/sh
 # Notify the local scheduler. This hook does not build or test.
 repo=$(basename "$PWD" .git)
-url="http://127.0.0.1:3001/events"
+url="http://127.0.0.1:6001/events"
 
 while read -r old new ref; do
   payload=$(printf '{"repository":"%s","ref":"%s","oldSha":"%s","newSha":"%s"}' "$repo" "$ref" "$old" "$new")

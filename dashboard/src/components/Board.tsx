@@ -1,11 +1,14 @@
-import { useEffect, useRef, useState } from 'react'
+import { useEffect, useRef, useState, type ComponentProps } from 'react'
 import { Box, Button, Chip, MenuItem, Select, Skeleton, Typography } from '@mui/material'
 import { useColorMode } from '../color-mode'
 import { formatAgo, mono, shortSha } from '../format'
 import { mainSha, pushDevelopSha, pushMainSha, type RepoSnapshot } from '../gates'
+import { useToast } from '../toast'
 import { LogSkeleton, Panel, RunSkeleton, Sha, StatusChip } from '../ui'
+import { ConnectDialog } from './Connect'
 import { LiveLog } from './LiveLog'
 import { Onboarding } from './Onboarding'
+import { Repositories } from './Repositories'
 
 type Run = {
   id: string
@@ -39,16 +42,20 @@ type RunInput = Omit<Run, 'startedAt' | 'finishedAt' | 'exitCode' | 'baseSha' | 
   taskId?: string | null
 }
 
-type ApiBody = {
-  error?: unknown
-  remote?: unknown
+const ZERO = '0000000000000000000000000000000000000000'
+
+function repositoryQuery(): string {
+  return new URLSearchParams(window.location.search).get('repository') ?? ''
 }
 
-type PushNotice = { ok: true; remote: string } | { ok: false; error: string }
-
-type RepositoryOption = { id: string; name: string }
-
-const ZERO = '0000000000000000000000000000000000000000'
+function setRepositoryQuery(id: string) {
+  const url = new URL(window.location.href)
+  if (id) url.searchParams.set('repository', id)
+  else url.searchParams.delete('repository')
+  const next = `${url.pathname}${url.search}${url.hash}`
+  const current = `${window.location.pathname}${window.location.search}${window.location.hash}`
+  if (next !== current) window.history.replaceState(null, '', next)
+}
 
 function normalize(run: RunInput): Run {
   return {
@@ -92,107 +99,188 @@ function normalizeRepo(body: RepoSnapshot): RepoSnapshot {
   }
 }
 
-async function postJson(path: string, payload: unknown): Promise<{ ok: boolean; status: number; body: ApiBody }> {
+async function postJson(path: string, payload: unknown): Promise<{ ok: boolean; status: number; body: Record<string, unknown> }> {
   const response = await fetch(path, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify(payload),
   })
-  let body: ApiBody = {}
+  let body: Record<string, unknown> = {}
   try {
     const parsed: unknown = await response.json()
-    if (parsed !== null && typeof parsed === 'object') body = parsed as ApiBody
+    if (parsed !== null && typeof parsed === 'object') body = parsed as Record<string, unknown>
   } catch {
     body = {}
   }
   return { ok: response.ok, status: response.status, body }
 }
 
-function apiError(body: ApiBody, status: number, label: string): string {
+function apiError(body: Record<string, unknown>, status: number, label: string): string {
   return typeof body.error === 'string' && body.error.length > 0 ? body.error : `${label} (${status})`
+}
+
+function keepGitHub(current: RepoSnapshot | undefined, next: RepoSnapshot): RepoSnapshot {
+  if (!current || current.id !== next.id) return next
+  return {
+    ...next,
+    githubDevelop: next.githubDevelop ?? current.githubDevelop,
+    githubMain: next.githubMain ?? current.githubMain,
+  }
+}
+
+function ActionButton({
+  busyKey,
+  busy,
+  children,
+  disabled,
+  variant = 'outlined',
+  ...props
+}: ComponentProps<typeof Button> & { busyKey: string; busy: string | null }) {
+  const loading = busy === busyKey
+  return (
+    <Button
+      {...props}
+      type="button"
+      size={props.size ?? 'small'}
+      variant={variant}
+      loading={loading}
+      loadingPosition="center"
+      disabled={Boolean(disabled) || (busy !== null && !loading)}
+      sx={{ minWidth: 96, flexShrink: 0 }}
+    >
+      {children}
+    </Button>
+  )
 }
 
 export function Board() {
   const { mode, toggle } = useColorMode()
+  const notify = useToast()
   const [runs, setRuns] = useState<Run[]>([])
   const [runsReady, setRunsReady] = useState(false)
   const [repo, setRepo] = useState<RepoSnapshot | null>(null)
-  const [repositories, setRepositories] = useState<RepositoryOption[]>([])
-  const [selectedRepositoryId, setSelectedRepositoryId] = useState('')
+  const [repositories, setRepositories] = useState<RepoSnapshot[]>([])
+  const [selectedRepositoryId, setSelectedRepositoryId] = useState(repositoryQuery)
   const [showSetup, setShowSetup] = useState(false)
+  const [showRepositories, setShowRepositories] = useState(false)
+  const [showConnect, setShowConnect] = useState(false)
   const [repoReady, setRepoReady] = useState(false)
   const [offline, setOffline] = useState(false)
   const [selectedId, setSelectedId] = useState<string | null>(null)
   const [now, setNow] = useState(() => Date.now())
-  const [mergingId, setMergingId] = useState<string | null>(null)
-  const [mergeErrors, setMergeErrors] = useState<Record<string, string>>({})
-  const [pushing, setPushing] = useState(false)
-  const [openingMain, setOpeningMain] = useState(false)
-  const [pushNotice, setPushNotice] = useState<PushNotice | null>(null)
-  const mergeLock = useRef<string | null>(null)
-  const pushLock = useRef(false)
+  const [busy, setBusy] = useState<string | null>(null)
+  const busyLock = useRef<string | null>(null)
+  const activeIdRef = useRef(selectedRepositoryId)
 
-  async function action(path: string, payload: unknown, label: string) {
-    if (pushLock.current) return
-    pushLock.current = true
-    setPushing(true)
-    setPushNotice(null)
+  async function refreshRuns(repositoryId: string) {
+    const response = await fetch(`/api/runs?repository=${encodeURIComponent(repositoryId)}`)
+    if (!response.ok || activeIdRef.current !== repositoryId) return
+    const body = (await response.json()) as { runs?: RunInput[] }
+    if (!Array.isArray(body.runs) || activeIdRef.current !== repositoryId) return
+    setRuns(body.runs.map(normalize))
+    setRunsReady(true)
+    setOffline(false)
+    setNow(Date.now())
+  }
+
+  async function refreshBoard(repositoryId: string) {
+    const reposResponse = await fetch('/api/repositories')
+    if (reposResponse.ok && activeIdRef.current === repositoryId) {
+      const body = (await reposResponse.json()) as { repositories?: RepoSnapshot[] }
+      if (Array.isArray(body.repositories)) {
+        const snapshots = body.repositories.map(normalizeRepo)
+        setRepositories((current) => snapshots.map((item) => keepGitHub(current.find((entry) => entry.id === item.id), item)))
+        setRepo((current) => {
+          const next = snapshots.find((item) => item.id === repositoryId)
+          return next ? keepGitHub(current ?? undefined, next) : current
+        })
+      }
+    }
+    await refreshRuns(repositoryId)
+  }
+
+  async function runAction(key: string, path: string, payload: unknown, label: string, success: string | ((body: Record<string, unknown>) => string)) {
+    if (busyLock.current) return
+    busyLock.current = key
+    setBusy(key)
+    const repositoryId = activeIdRef.current
     try {
       const result = await postJson(path, payload)
-      setPushNotice(result.ok ? { ok: true, remote: `${label} complete` } : { ok: false, error: apiError(result.body, result.status, label) })
-    } catch { setPushNotice({ ok: false, error: `${label} request failed` }) }
-    finally { pushLock.current = false; setPushing(false) }
+      if (result.ok && path === '/api/sync' && typeof result.body.id === 'string') {
+        const saved = normalizeRepo(result.body as RepoSnapshot)
+        setRepositories((items) => items.map((item) => item.id === saved.id ? saved : item))
+        if (activeIdRef.current === saved.id) setRepo(saved)
+      }
+      await refreshBoard(repositoryId)
+      if (result.ok) notify('success', typeof success === 'function' ? success(result.body) : success)
+      else notify('error', apiError(result.body, result.status, label))
+    } catch {
+      notify('error', `${label} request failed`)
+    } finally {
+      busyLock.current = null
+      setBusy(null)
+    }
   }
 
   useEffect(() => {
     let cancel = false
-    let ticket = 0
-    const tick = () => {
-      const mine = ++ticket
-      void (async () => {
-        try {
-          const response = await fetch('/api/repositories')
-          if (!response.ok) throw new Error(String(response.status))
-          const body = (await response.json()) as { repositories?: RepoSnapshot[] }
-          if (cancel || mine !== ticket) return
-          const snapshots = Array.isArray(body.repositories) ? body.repositories.map(normalizeRepo) : []
-          setRepositories(snapshots.map(({ id, name }) => ({ id, name })))
-          const active = snapshots.find((item) => item.id === selectedRepositoryId) ?? snapshots[0]
-          if (!active) {
-            setRepo(null)
-            setRepoReady(true)
-            setRuns([])
-            setRunsReady(true)
-            setOffline(false)
-            return
-          }
-          if (!selectedRepositoryId) setSelectedRepositoryId(active.id)
-          setRepo(active)
+    void (async () => {
+      try {
+        const response = await fetch('/api/repositories')
+        if (!response.ok) throw new Error(String(response.status))
+        const body = (await response.json()) as { repositories?: RepoSnapshot[] }
+        if (cancel) return
+        const snapshots = Array.isArray(body.repositories) ? body.repositories.map(normalizeRepo) : []
+        setRepositories(snapshots)
+        const active = snapshots.find((item) => item.id === selectedRepositoryId) ?? snapshots[0]
+        if (!active) {
+          setRepo(null)
           setRepoReady(true)
-          const runsResponse = await fetch(`/api/runs?repository=${encodeURIComponent(active.id)}`)
-          if (!runsResponse.ok) throw new Error(String(runsResponse.status))
-          const runsBody = (await runsResponse.json()) as { runs?: RunInput[] }
-          if (cancel || mine !== ticket) return
-          if (!Array.isArray(runsBody.runs)) throw new Error('runs')
-          setRuns(runsBody.runs.map(normalize))
-          setOffline(false)
+          setRuns([])
           setRunsReady(true)
-          setNow(Date.now())
-        } catch {
-          if (!cancel && mine === ticket) {
-            setOffline(true)
-            setRunsReady(true)
-          }
+          setOffline(false)
+          return
         }
-      })()
-    }
-    void tick()
-    const id = window.setInterval(() => void tick(), 1000)
+        setRepo(active)
+        setRepoReady(true)
+        const runsResponse = await fetch(`/api/runs?repository=${encodeURIComponent(active.id)}`)
+        if (!runsResponse.ok) throw new Error(String(runsResponse.status))
+        const runsBody = (await runsResponse.json()) as { runs?: RunInput[] }
+        if (cancel) return
+        if (!Array.isArray(runsBody.runs)) throw new Error('runs')
+        setRuns(runsBody.runs.map(normalize))
+        setOffline(false)
+        setRunsReady(true)
+        setNow(Date.now())
+        const synced = await fetch('/api/repositories?sync=1')
+        if (!synced.ok || cancel) return
+        const syncedBody = (await synced.json()) as { repositories?: RepoSnapshot[] }
+        if (cancel || !Array.isArray(syncedBody.repositories)) return
+        const refreshed = syncedBody.repositories.map(normalizeRepo)
+        setRepositories(refreshed)
+        setRepo(refreshed.find((item) => item.id === active.id) ?? refreshed[0] ?? null)
+      } catch {
+        if (!cancel) {
+          setOffline(true)
+          setRunsReady(true)
+        }
+      }
+    })()
     return () => {
       cancel = true
-      window.clearInterval(id)
     }
   }, [selectedRepositoryId])
+
+  useEffect(() => {
+    const onPop = () => setSelectedRepositoryId(repositoryQuery())
+    window.addEventListener('popstate', onPop)
+    return () => window.removeEventListener('popstate', onPop)
+  }, [])
+
+  function selectRepository(id: string) {
+    setSelectedRepositoryId(id)
+    setRepositoryQuery(id)
+  }
 
   useEffect(() => {
     if (selectedId && runs.some((run) => run.id === selectedId)) return
@@ -200,53 +288,25 @@ export function Board() {
     setSelectedId(running?.id ?? runs[0]?.id ?? null)
   }, [runs, selectedId])
 
-  async function mergeRun(runId: string) {
-    if (mergeLock.current) return
-    mergeLock.current = runId
-    setMergingId(runId)
-    setMergeErrors((current) => {
-      const next = { ...current }
-      delete next[runId]
-      return next
-    })
-    try {
-      const result = await postJson('/api/merges', { runId })
-      if (!result.ok) {
-        setMergeErrors((current) => ({ ...current, [runId]: apiError(result.body, result.status, 'Merge failed') }))
-        return
-      }
-      setMergeErrors((current) => {
-        const next = { ...current }
-        delete next[runId]
-        return next
-      })
-    } catch {
-      setMergeErrors((current) => ({ ...current, [runId]: 'Merge request failed' }))
-    } finally {
-      mergeLock.current = null
-      setMergingId(null)
-    }
-  }
+  const activeRepositoryId = repositories.find((item) => item.id === selectedRepositoryId)?.id ?? repositories[0]?.id ?? ''
+  activeIdRef.current = activeRepositoryId
 
-  async function pushDevelop() {
-    if (pushLock.current) return
-    pushLock.current = true
-    setPushing(true)
-    setPushNotice(null)
-    try {
-      const result = await postJson('/api/pushes', { repository: selectedRepositoryId, branch: 'develop' })
-      if (!result.ok) {
-        setPushNotice({ ok: false, error: apiError(result.body, result.status, 'Push failed') })
-        return
-      }
-      setPushNotice(typeof result.body.remote === 'string' ? { ok: true, remote: result.body.remote } : null)
-    } catch {
-      setPushNotice({ ok: false, error: 'Push request failed' })
-    } finally {
-      pushLock.current = false
-      setPushing(false)
-    }
-  }
+  useEffect(() => {
+    if (!repoReady) return
+    setRepositoryQuery(activeRepositoryId)
+  }, [repoReady, activeRepositoryId])
+
+  const live = runs.some((run) => run.status === 'queued' || run.status === 'running')
+  const wasLive = useRef(false)
+  useEffect(() => {
+    if (!runsReady || !activeRepositoryId) return
+    const stopped = wasLive.current && !live
+    wasLive.current = live
+    if (stopped) void refreshBoard(activeRepositoryId)
+    if (!live) return
+    const id = window.setInterval(() => { void refreshRuns(activeRepositoryId) }, 2000)
+    return () => window.clearInterval(id)
+  }, [live, runsReady, activeRepositoryId])
 
   const running = runs.find((run) => run.status === 'running')
   const queued = runs.filter((run) => run.status === 'queued')
@@ -257,42 +317,6 @@ export function Board() {
   const canOpenMain = mainSha(repo) !== null && repo?.develop != null && !repo?.integration
   const mainBusy = runs.some((run) => run.target === 'main' && (run.status === 'queued' || run.status === 'running'))
 
-  async function openMain() {
-    if (pushLock.current) return
-    pushLock.current = true
-    setOpeningMain(true)
-    setPushNotice(null)
-    try {
-      const result = await postJson('/api/main', { repository: selectedRepositoryId })
-      if (!result.ok) setPushNotice({ ok: false, error: apiError(result.body, result.status, 'Validation failed') })
-    } catch {
-      setPushNotice({ ok: false, error: 'Validation request failed' })
-    } finally {
-      pushLock.current = false
-      setOpeningMain(false)
-    }
-  }
-
-  async function pushMain() {
-    if (pushLock.current) return
-    pushLock.current = true
-    setPushing(true)
-    setPushNotice(null)
-    try {
-      const result = await postJson('/api/pushes', { repository: selectedRepositoryId, branch: 'main' })
-      if (!result.ok) {
-        setPushNotice({ ok: false, error: apiError(result.body, result.status, 'Push failed') })
-        return
-      }
-      setPushNotice(typeof result.body.remote === 'string' ? { ok: true, remote: result.body.remote } : null)
-    } catch {
-      setPushNotice({ ok: false, error: 'Push request failed' })
-    } finally {
-      pushLock.current = false
-      setPushing(false)
-    }
-  }
-
   const summary = (run: Run) => (
     <RunSummary
       key={run.id}
@@ -301,22 +325,51 @@ export function Board() {
       selected={selected?.id === run.id}
       onSelect={() => setSelectedId(run.id)}
       showMerge={false}
-      merging={mergingId === run.id}
-      mergeError={mergeErrors[run.id] ?? null}
-      onMerge={() => void mergeRun(run.id)}
-      onCancel={() => void action(`/api/runs/${encodeURIComponent(run.id)}/cancel`, {}, 'Cancel')}
-      onRetry={() => void action(`/api/runs/${encodeURIComponent(run.id)}/retry`, {}, 'Retry')}
-      onReconcile={() => void action('/api/reconciliations', { runId: run.id }, 'Reconcile develop')}
+      busy={busy}
+      onMerge={() => void runAction(`merge:${run.id}`, '/api/merges', { runId: run.id }, 'Merge', 'Merge finished')}
+      onCancel={() => void runAction(`cancel:${run.id}`, `/api/runs/${encodeURIComponent(run.id)}/cancel`, {}, 'Cancel', 'Run canceled')}
+      onRetry={() => void runAction(`retry:${run.id}`, `/api/runs/${encodeURIComponent(run.id)}/retry`, {}, 'Retry', 'Retry queued')}
+      onReconcile={() => void runAction(`reconcile:${run.id}`, '/api/reconciliations', { runId: run.id }, 'Reconcile', 'Develop reconciled')}
     />
   )
+
+  if (showRepositories) {
+    return (
+      <Repositories
+        repositories={repositories}
+        activeId={activeRepositoryId}
+        onOpen={(id) => {
+          selectRepository(id)
+          setRuns([])
+          setSelectedId(null)
+          setShowRepositories(false)
+        }}
+        onAdd={() => { setShowRepositories(false); setShowSetup(true) }}
+        onRemoved={(id) => {
+          const remaining = repositories.filter((item) => item.id !== id)
+          setRepositories(remaining)
+          if (activeRepositoryId === id) {
+            const next = remaining[0]
+            selectRepository(next?.id ?? '')
+            setRepo(next ?? null)
+            setRuns([])
+            setSelectedId(null)
+            setRunsReady(!next)
+          }
+        }}
+        onClose={() => setShowRepositories(false)}
+      />
+    )
+  }
 
   if (showSetup || (repoReady && !offline && repositories.length === 0)) {
     return <Onboarding onCancel={repositories.length ? () => setShowSetup(false) : undefined} onSaved={(snapshot) => {
       const saved = normalizeRepo(snapshot)
       setRepo(saved)
-      setRepositories((items) => [...items.filter((item) => item.id !== saved.id), { id: saved.id, name: saved.name }])
-      setSelectedRepositoryId(saved.id)
+      setRepositories((items) => [...items.filter((item) => item.id !== saved.id), saved])
+      selectRepository(saved.id)
       setShowSetup(false)
+      notify('success', `Connected ${saved.name}`)
     }} />
   }
 
@@ -326,16 +379,15 @@ export function Board() {
         <Box sx={{ display: 'flex', alignItems: 'center', flexWrap: 'wrap', gap: 2 }}>
           <Typography sx={{ fontWeight: 600, fontSize: 16 }}>local ci</Typography>
           {repoReady && repositories.length > 0 && (
-            <Select size="small" value={selectedRepositoryId} onChange={(event) => {
-              setSelectedRepositoryId(event.target.value)
+            <Select size="small" value={activeRepositoryId} onChange={(event) => {
+              selectRepository(event.target.value)
               setRuns([])
               setSelectedId(null)
-              setPushNotice(null)
             }} sx={{ minWidth: 190, height: 32, fontSize: 13 }}>
               {repositories.map((item) => <MenuItem key={item.id} value={item.id}>{item.name}</MenuItem>)}
             </Select>
           )}
-          {repo && <Typography variant="caption" sx={{ fontFamily: mono }}>{repo.id} · {repo.barePath}</Typography>}
+          {repo && <Button type="button" size="small" variant="outlined" onClick={() => setShowConnect(true)}>Connect</Button>}
           {!runsReady ? (
             <Skeleton variant="text" width={118} height={16} />
           ) : (
@@ -344,11 +396,12 @@ export function Board() {
             </Typography>
           )}
           <Box sx={{ flex: 1 }} />
+          {repoReady && repositories.length > 0 && <Button type="button" size="small" onClick={() => setShowRepositories(true)}>All repositories</Button>}
           {repoReady && repositories.length > 0 && <Button type="button" size="small" onClick={() => setShowSetup(true)}>Add repository</Button>}
-          {repo && <Button type="button" size="small" disabled={pushing} onClick={() => void action('/api/sync', { repository: repo.id }, 'Sync')}>Sync GitHub</Button>}
-          {repo?.githubDevelop?.relation === 'diverged' && <Button type="button" size="small" color="warning" disabled={pushing} onClick={() => void action('/api/reconcile', { repository: repo.id }, 'Validate reconciliation')}>Validate reconciliation</Button>}
-          {repo?.pendingReset && <Button type="button" size="small" color="warning" variant="outlined" disabled={pushing} onClick={() => void action('/api/reset-develop', { repository: repo.id }, 'Reset develop')}>Reset develop to main</Button>}
-          {repo?.integration?.mode === 'frozen' && <Button type="button" size="small" variant="outlined" disabled={pushing} onClick={() => void action('/api/promotion/cancel', { repository: repo.id }, 'Release promotion')}>Release promotion</Button>}
+          {repo && <ActionButton busyKey="sync" busy={busy} onClick={() => void runAction('sync', '/api/sync', { repository: repo.id }, 'Sync', 'GitHub sync finished')}>Sync GitHub</ActionButton>}
+          {repo?.githubDevelop?.relation === 'diverged' && <ActionButton busyKey="reconcile" busy={busy} color="warning" onClick={() => void runAction('reconcile', '/api/reconcile', { repository: repo.id }, 'Validate reconciliation', 'Reconciliation queued')}>Validate reconciliation</ActionButton>}
+          {repo?.pendingReset && <ActionButton busyKey="reset" busy={busy} color="warning" onClick={() => void runAction('reset', '/api/reset-develop', { repository: repo.id }, 'Reset develop', 'Develop reset to main')}>Reset develop to main</ActionButton>}
+          {repo?.integration?.mode === 'frozen' && <ActionButton busyKey="promotion" busy={busy} onClick={() => void runAction('promotion', '/api/promotion/cancel', { repository: repo.id }, 'Release promotion', 'Promotion released')}>Release promotion</ActionButton>}
           {!repoReady && (
             <>
               <Skeleton variant="rounded" width={150} height={30} />
@@ -356,19 +409,19 @@ export function Board() {
             </>
           )}
           {repoReady && canOpenMain && (
-            <Button type="button" size="small" variant="outlined" disabled={openingMain || pushing || mainBusy} onClick={() => void openMain()} sx={{ flexShrink: 0 }}>
+            <ActionButton busyKey="main" busy={busy} disabled={mainBusy} onClick={() => void runAction('main', '/api/main', { repository: activeRepositoryId }, 'Validation', 'Validation queued')}>
               Validate develop → main
-            </Button>
+            </ActionButton>
           )}
           {repoReady && githubMainSha && (
-            <Button type="button" size="small" variant="contained" disabled={pushing || openingMain} onClick={() => void pushMain()} sx={{ flexShrink: 0 }}>
+            <ActionButton busyKey="push-main" busy={busy} variant="contained" onClick={() => void runAction('push-main', '/api/pushes', { repository: activeRepositoryId, branch: 'main' }, 'Push', (body) => typeof body.remote === 'string' ? body.remote : 'Pushed main to GitHub')}>
               Push main to GitHub {shortSha(githubMainSha)}
-            </Button>
+            </ActionButton>
           )}
           {repoReady && developSha && (
-            <Button type="button" size="small" variant="contained" disabled={pushing || openingMain} onClick={() => void pushDevelop()} sx={{ flexShrink: 0 }}>
+            <ActionButton busyKey="push-develop" busy={busy} variant="contained" onClick={() => void runAction('push-develop', '/api/pushes', { repository: activeRepositoryId, branch: 'develop' }, 'Push', (body) => typeof body.remote === 'string' ? body.remote : 'Pushed develop to GitHub')}>
               Push to develop {shortSha(developSha)}
-            </Button>
+            </ActionButton>
           )}
           <Button type="button" size="small" onClick={toggle} sx={{ minWidth: 0, py: 0, color: 'text.secondary' }}>
             {mode === 'dark' ? 'Light' : 'Dark'}
@@ -377,11 +430,6 @@ export function Board() {
             127.0.0.1
           </Typography>
         </Box>
-        {pushNotice && (
-          <Typography variant="caption" color={pushNotice.ok ? 'success.main' : 'error.main'} sx={{ display: 'block', mt: 0.5 }}>
-            {pushNotice.ok ? pushNotice.remote : pushNotice.error}
-          </Typography>
-        )}
         {repo?.syncError && <Typography variant="caption" color="error.main" sx={{ display: 'block' }}>GitHub sync: {repo.syncError}</Typography>}
         {repo?.githubDevelop && <Typography variant="caption" color={repo.githubDevelop.relation === 'diverged' ? 'error.main' : 'text.secondary'} sx={{ display: 'block' }}>
           GitHub develop: {repo.githubDevelop.relation} · local {shortSha(repo.githubDevelop.local ?? '')} · GitHub {shortSha(repo.githubDevelop.github ?? '')}
@@ -389,13 +437,8 @@ export function Board() {
         {repo?.integration && <Typography variant="caption" color={repo.integration.mode === 'blocked' ? 'error.main' : 'warning.main'} sx={{ display: 'block' }}>
           Integration {repo.integration.mode}: {repo.integration.reason}. Agent candidates wait for this repository.
         </Typography>}
-        <Typography variant="caption" color="text.secondary" sx={{ display: 'block', mt: 0.5 }}>
-          Push to ci runs checks against the current develop and integrates the exact tested commit automatically. Push to develop sends that healthy snapshot to staging. Validate develop → main freezes integration until you push main and reset develop, or cancel promotion.
-        </Typography>
-        {repo && <Typography variant="caption" color="text.secondary" sx={{ display: 'block', mt: 0.25, fontFamily: mono }}>
-          git remote add ci {repo.barePath}
-        </Typography>}
       </Box>
+      <ConnectDialog repo={repo} open={showConnect} onClose={() => setShowConnect(false)} />
 
       <Box sx={{ flex: 1, minHeight: 0, display: 'grid', gridTemplateColumns: 'minmax(360px, 460px) minmax(0, 1fr)', gap: 1.25, p: 1.25 }}>
         <Box sx={{ minHeight: 0, display: 'grid', gridTemplateRows: 'auto auto minmax(120px, auto) minmax(0, 1fr)', gap: 1.25 }}>
@@ -405,7 +448,7 @@ export function Board() {
             <Box sx={{ px: 1.5, py: 1.25 }}>
               {offline && (
                 <Typography variant="caption" color="warning.main">
-                  Scheduler is not answering on 127.0.0.1:3001.
+                  Scheduler is not answering on 127.0.0.1:6001.
                 </Typography>
               )}
               {!offline && running && summary(running)}
@@ -455,8 +498,8 @@ export function Board() {
                 <Typography variant="caption" color="text.secondary" sx={{ fontFamily: mono }}><Sha value={branch.sha} /></Typography>
                 {branch.behindDevelop !== null && branch.name !== 'develop' && <Typography variant="caption" color={branch.behindDevelop > (repo?.maxBranchDrift ?? 10) ? 'error.main' : 'text.secondary'}>{branch.behindDevelop} behind</Typography>}
                 <Chip size="small" label={branch.status.replaceAll('-', ' ')} color={branch.status === 'ready-to-merge' || branch.status === 'ready-to-deploy' ? 'success' : branch.status === 'failed' || branch.status === 'sync-required' ? 'error' : 'default'} />
-                {branch.name !== 'main' && branch.name !== 'develop' && branch.status !== 'sync-required' && <Button size="small" onClick={() => void action('/api/runs/manual', { repository: repo.id, branch: branch.name }, 'Enqueue')}>Run</Button>}
-                {branch.status === 'sync-required' && <Button size="small" onClick={() => setPushNotice({ ok: false, error: `Sync ${branch.name} in your working copy: git fetch ci develop && git rebase ci/develop && git push --force-with-lease ci ${branch.name}` })}>Sync/Rebase</Button>}
+                {branch.name !== 'main' && branch.name !== 'develop' && branch.status !== 'sync-required' && <ActionButton busyKey={`run:${branch.name}`} busy={busy} onClick={() => void runAction(`run:${branch.name}`, '/api/runs/manual', { repository: repo.id, branch: branch.name }, 'Enqueue', 'Run queued')}>Run</ActionButton>}
+                {branch.status === 'sync-required' && <Button size="small" variant="outlined" disabled={busy !== null} onClick={() => notify('warning', `Sync ${branch.name} in your working copy: git fetch ci develop && git rebase ci/develop && git push --force-with-lease ci ${branch.name}`)}>Sync/Rebase</Button>}
               </Box>
             ))}
           </Panel>
@@ -501,8 +544,7 @@ function RunSummary({
   selected,
   onSelect,
   showMerge,
-  merging,
-  mergeError,
+  busy,
   onMerge,
   onCancel,
   onRetry,
@@ -513,8 +555,7 @@ function RunSummary({
   selected: boolean
   onSelect: () => void
   showMerge: boolean
-  merging: boolean
-  mergeError: string | null
+  busy: string | null
   onMerge: () => void
   onCancel: () => void
   onRetry: () => void
@@ -559,33 +600,17 @@ function RunSummary({
         </Typography>
       )}
       {showMerge && (
-        <Box sx={{ mt: 0.75 }}>
-          <Button
-            type="button"
-            size="small"
-            variant="contained"
-            color="success"
-            disabled={merging}
-            onClick={(event) => {
-              event.stopPropagation()
-              onSelect()
-              onMerge()
-            }}
-          >
+        <Box sx={{ mt: 0.75 }} onClick={(event) => event.stopPropagation()}>
+          <ActionButton busyKey={`merge:${run.id}`} busy={busy} variant="contained" color="success" onClick={() => { onSelect(); onMerge() }}>
             Merge to develop
-          </Button>
-          {mergeError ? (
-            <Typography variant="caption" color="error.main" sx={{ display: 'block', mt: 0.5 }}>
-              {mergeError}
-            </Typography>
-          ) : null}
+          </ActionButton>
         </Box>
       )}
       {(run.status === 'queued' || run.status === 'running' || run.status === 'failed' || run.status === 'canceled' || run.status === 'stale' || (run.target === 'reconcile' && run.status === 'passed')) && (
-        <Box sx={{ mt: 0.5 }}>
-          {(run.status === 'queued' || run.status === 'running') && <Button size="small" onClick={(event) => { event.stopPropagation(); onCancel() }}>Cancel</Button>}
-          {(run.status === 'failed' || run.status === 'canceled' || run.status === 'stale') && run.candidateSha && <Button size="small" onClick={(event) => { event.stopPropagation(); onRetry() }}>Retry</Button>}
-          {run.target === 'reconcile' && run.status === 'passed' && <Button size="small" color="success" onClick={(event) => { event.stopPropagation(); onReconcile() }}>Reconcile develop</Button>}
+        <Box sx={{ mt: 0.5 }} onClick={(event) => event.stopPropagation()}>
+          {(run.status === 'queued' || run.status === 'running') && <ActionButton busyKey={`cancel:${run.id}`} busy={busy} color="warning" onClick={onCancel}>Cancel</ActionButton>}
+          {(run.status === 'failed' || run.status === 'canceled' || run.status === 'stale') && run.candidateSha && <ActionButton busyKey={`retry:${run.id}`} busy={busy} onClick={onRetry}>Retry</ActionButton>}
+          {run.target === 'reconcile' && run.status === 'passed' && <ActionButton busyKey={`reconcile:${run.id}`} busy={busy} color="success" onClick={onReconcile}>Reconcile develop</ActionButton>}
         </Box>
       )}
     </Box>

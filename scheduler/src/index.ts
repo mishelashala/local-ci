@@ -1,4 +1,5 @@
 import Fastify from 'fastify'
+import { randomUUID } from 'node:crypto'
 import { copyFileSync, createReadStream, existsSync, mkdirSync, readdirSync, rmSync, statSync } from 'node:fs'
 import { execFileSync } from 'node:child_process'
 import { extname, join, resolve } from 'node:path'
@@ -31,6 +32,8 @@ import {
   recentRunsForRepository,
   saveRepository,
   listRunsForRepository,
+  activeRunIds,
+  deleteRepository,
   cancelQueuedRun,
   retryRun,
   savePromotion,
@@ -105,15 +108,17 @@ function repositoryFor(id: unknown) {
   return undefined
 }
 
-async function snapshotFor(repository: NonNullable<ReturnType<typeof getRepository>>) {
+async function snapshotFor(repository: NonNullable<ReturnType<typeof getRepository>>, sync = true) {
   let syncError: string | null = null
-  try {
-    if (!integrationControl(repository.id)) await synchronizeDevelop(repository.barePath)
-    await synchronizeBranch(repository.barePath, 'main')
-  } catch (error) {
-    syncError = error instanceof Error ? error.message : String(error)
+  if (sync) {
+    try {
+      if (!integrationControl(repository.id)) await synchronizeDevelop(repository.barePath)
+      await synchronizeBranch(repository.barePath, 'main')
+    } catch (error) {
+      syncError = error instanceof Error ? error.message : String(error)
+    }
   }
-  const snapshot = await currentRepoSnapshot(repository.barePath, repository.id, repository.name)
+  const snapshot = await currentRepoSnapshot(repository.barePath, repository.id, repository.name, sync)
   const runs = recentRunsForRepository(repository.id)
   const branches = snapshot.branches.map((branch) => {
     const latest = runs.find((run) => run.branch === branch.name && run.target !== 'main')
@@ -129,8 +134,8 @@ async function snapshotFor(repository: NonNullable<ReturnType<typeof getReposito
   })
   return {
     ...snapshot, barePath: repository.barePath, maxBranchDrift: MAX_BRANCH_DRIFT, branches,
-    githubDevelop: branchSync(repository.barePath, 'develop'),
-    githubMain: branchSync(repository.barePath, 'main'),
+    githubDevelop: sync ? branchSync(repository.barePath, 'develop') : null,
+    githubMain: sync ? branchSync(repository.barePath, 'main') : null,
     syncError,
     pendingReset: pendingPromotion(repository.id) ?? null,
     integration: integrationControl(repository.id) ?? null,
@@ -141,7 +146,10 @@ discoverExistingRepositories()
 
 app.get('/health', async () => ({ ok: true }))
 
-app.get('/repositories', async () => ({ repositories: await Promise.all(listRepositories().map(snapshotFor)) }))
+app.get<{ Querystring: { sync?: string } }>('/repositories', async (request) => {
+  const sync = request.query.sync === '1'
+  return { repositories: await Promise.all(listRepositories().map((repository) => snapshotFor(repository, sync))) }
+})
 
 app.get<{ Querystring: { repository?: string } }>('/repo', async (request, reply) => {
   const selected = repositoryFor(request.query.repository) ?? listRepositories()[0]
@@ -158,14 +166,14 @@ app.get<{ Querystring: { repository?: string } }>('/runs', async (request, reply
 })
 
 app.post('/repositories', async (request, reply) => {
-  const body = request.body as { id?: unknown; name?: unknown; github?: unknown } | null
-  const id = typeof body?.id === 'string' ? body.id.trim().toLowerCase() : ''
-  const name = typeof body?.name === 'string' ? body.name.trim() : id
+  const body = request.body as { name?: unknown; github?: unknown } | null
   const github = typeof body?.github === 'string' ? body.github.trim() : ''
-  if (!REPOSITORY_ID.test(id)) return reply.code(400).send({ error: 'Use a repository ID with letters, numbers, dots, underscores, or hyphens.' })
-  if (name.length < 1 || name.length > 100) return reply.code(400).send({ error: 'Repository name is required.' })
+  const providedName = typeof body?.name === 'string' ? body.name.trim() : ''
+  const remoteName = github.match(/([^/:]+?)(?:\.git)?$/)?.[1] ?? ''
+  const name = providedName || remoteName
+  const id = randomUUID()
   if (!GITHUB_REMOTE.test(github)) return reply.code(400).send({ error: 'Use a git@, ssh://, or https:// remote.' })
-  if (getRepository(id)) return reply.code(409).send({ error: 'repository is already registered' })
+  if (name.length < 1 || name.length > 100) return reply.code(400).send({ error: 'Repository name is required.' })
   const path = bareRepo(id)
   mkdirSync(repositoryRoot, { recursive: true })
   let initialized = false
@@ -198,6 +206,28 @@ app.post('/repositories', async (request, reply) => {
     const message = error instanceof Error ? error.message : String(error)
     return reply.code(502).send({ error: `Could not connect repository: ${message}` })
   }
+})
+
+app.delete<{ Params: { id: string } }>('/repositories/:id', async (request, reply) => {
+  if (!REPOSITORY_ID.test(request.params.id)) return reply.code(400).send({ error: 'repository not found' })
+  const repository = getRepository(request.params.id)
+  if (!repository) return reply.code(404).send({ error: 'repository not found' })
+  for (const run of activeRunIds(repository.id)) {
+    cancelQueuedRun(run.id)
+    cancelActiveRun(run.id)
+  }
+  const managedPath = resolve(bareRepo(repository.id))
+  if (resolve(repository.barePath) === managedPath && existsSync(managedPath)) {
+    try {
+      rmSync(managedPath, { recursive: true, force: true })
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error)
+      return reply.code(409).send({ error: `Could not delete the local repository: ${message}` })
+    }
+  }
+  if (!deleteRepository(repository.id)) return reply.code(404).send({ error: 'repository not found' })
+  clearRepoCache()
+  return { removed: repository.id }
 })
 
 app.get<{ Params: { id: string }; Querystring: { workflow?: string } }>('/runs/:id/logs', async (request, reply) => {
@@ -614,5 +644,5 @@ app.get('/*', async (request, reply) => {
 
 startWorker()
 
-const port = Number(process.env.LOCAL_CI_PORT ?? 3001)
+const port = Number(process.env.LOCAL_CI_PORT ?? 6001)
 await app.listen({ host: process.env.LOCAL_CI_HOST ?? '127.0.0.1', port })

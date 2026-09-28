@@ -10,18 +10,18 @@ Install Git, Node 24+, Docker Engine/Desktop, and act. Start the Docker daemon f
     npm ci --prefix dashboard
     npm run dev
 
-Open http://127.0.0.1:3001. One command starts the API and rebuilds the dashboard as files change. For a built run use npm start. The server binds to loopback by default.
+Open http://127.0.0.1:6001. One command starts the API and rebuilds the dashboard as files change. For a built run use npm start. The server binds to loopback by default.
 
 For Docker Compose, set the absolute path so the host Docker daemon and act can mount the same workspace:
 
     export LOCAL_CI_ROOT="$(pwd -P)"
     docker compose up --build
 
-Compose binds port 3001 to loopback and mounts the host Docker socket. SQLite and bare repositories stay in this project directory. The first build downloads the pinned act binary and Node dependencies. Share the directory with Docker Desktop if needed.
+Compose binds port 6001 to loopback and mounts the host Docker socket. SQLite and bare repositories stay in this project directory. The first build downloads the pinned act binary and Node dependencies. Share the directory with Docker Desktop if needed.
 
 ## Connect repositories
 
-Choose Add repository in the dashboard and enter an ID, display name, and GitHub SSH or HTTPS remote. Local CI creates a bare repository under ci/repos, fetches GitHub branches, and initializes local develop from GitHub develop or main. The repository selector shows each project's branches, queue, history, and logs. Runs across projects are serialized.
+Choose Add repository in the dashboard and enter a display name and GitHub SSH or HTTPS remote. The repository ID is a generated UUID. Local CI creates a bare repository under ci/repos, fetches GitHub branches, and initializes local develop from GitHub develop or main. The repository selector shows each project's branches, queue, history, and logs. Runs across projects are serialized.
 
 In a working copy, use the exact bare path displayed in the dashboard:
 
@@ -36,7 +36,7 @@ The run detail panel lists each selected YAML with its live status and exit code
 
 An agent can poll its result with `node scripts/ci-wait.mjs <repository-id> <branch> [head-sha]`; exit 0 means integrated, 1 means failed, and 2 means timed out. `GET /api/runs/:id/result` returns machine-readable run state, failure lines, artifact directory and logs URL. The task identifier currently defaults to the feature branch name. The agent must run this command itself and repair its own failures; local-ci does not send messages to a suspended agent process.
 
-Define each repository's checks in its own `.local-ci/workflows` directory. You can copy existing GitHub workflow YAML as a starting point and then evolve the local pipeline independently. Commit these files to the project before testing the branch. `act` uses the host Docker daemon for fresh runners and workflow service containers. It reuses locally cached images; a first run downloads missing images. LOCAL_CI_ACT_PLATFORM selects the ubuntu-latest image, LOCAL_CI_CONTAINER_ARCH selects its architecture, and LOCAL_CI_RUN_TIMEOUT_MINUTES defaults to 45.
+Define each repository's checks in its own `.local-ci/workflows` directory. You can copy existing GitHub workflow YAML as a starting point and then evolve the local pipeline independently. Commit these files to the project before testing the branch. `act` uses the host Docker daemon for fresh runners and workflow service containers. It reuses locally cached images; a first run downloads missing images. LOCAL_CI_ACT_PLATFORM selects the ubuntu-latest image, LOCAL_CI_CONTAINER_ARCH selects its architecture (default: linux/amd64, same as GitHub), and LOCAL_CI_RUN_TIMEOUT_MINUTES defaults to 45.
 
 ## Promotion and recovery
 

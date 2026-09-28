@@ -1,7 +1,8 @@
 import { useEffect, useRef, useState } from 'react'
-import { Box, Button, Typography } from '@mui/material'
+import { Accordion, AccordionDetails, AccordionSummary, Box, Button, Typography } from '@mui/material'
 import { AnsiText } from '../ansi'
 import { formatAgo, formatDuration, mono } from '../format'
+import { groupSteps, parseActSteps } from '../steps'
 import { LogSkeleton, Panel, Sha, StatusChip } from '../ui'
 
 type LiveRun = {
@@ -32,8 +33,10 @@ export function LiveLog({ runId }: { runId: string }) {
   const [error, setError] = useState(false)
   const scroller = useRef<HTMLDivElement>(null)
   const seen = useRef(0)
+  const [openStep, setOpenStep] = useState<string | null>(null)
+  const pickedStep = useRef(false)
 
-  useEffect(() => { setSelectedWorkflow(null) }, [runId])
+  useEffect(() => { setSelectedWorkflow(null); setOpenStep(null); pickedStep.current = false }, [runId])
 
   useEffect(() => {
     let cancel = false
@@ -82,13 +85,23 @@ export function LiveLog({ runId }: { runId: string }) {
     }
   }, [runId, selectedWorkflow])
 
+  const steps = parseActSteps(lines)
+  const jobs = groupSteps(steps)
+
+  useEffect(() => {
+    if (pickedStep.current) return
+    const running = steps.find((step) => step.status === 'running')
+    const failed = [...steps].reverse().find((step) => step.status === 'failed')
+    setOpenStep(running?.id ?? failed?.id ?? steps.at(-1)?.id ?? null)
+  }, [lines])
+
   useEffect(() => {
     if (lines.length === seen.current) return
     seen.current = lines.length
     const el = scroller.current
     if (!el) return
     el.scrollTop = el.scrollHeight
-  }, [lines])
+  }, [lines, openStep])
 
   return (
     <Panel
@@ -109,7 +122,7 @@ export function LiveLog({ runId }: { runId: string }) {
         <Box sx={{ px: 1.5, py: 1, borderBottom: '1px solid', borderColor: 'divider' }}>
           {!run && (
             <Typography variant="caption" color="text.secondary">
-              {error ? 'Scheduler is not answering on 127.0.0.1:3001.' : 'Loading run'}
+              {error ? 'Scheduler is not answering on 127.0.0.1:6001.' : 'Loading run'}
             </Typography>
           )}
           {run && (
@@ -140,23 +153,59 @@ export function LiveLog({ runId }: { runId: string }) {
             {workflow.exitCode !== null && <Typography variant="caption">exit {workflow.exitCode}</Typography>}
           </Box>)}
         </Box>}
-        <Box
-          ref={scroller}
-          sx={{ flex: 1, minHeight: 0, overflow: 'auto', px: 1.5, py: 1, fontFamily: mono, fontSize: 12.5, lineHeight: 1.55 }}
-        >
+        <Box sx={{ flex: 1, minHeight: 0, overflow: 'auto' }}>
           {error && (
-            <Typography variant="caption" color="warning.main" display="block">
-              Scheduler is not answering on 127.0.0.1:3001.
+            <Typography variant="caption" color="warning.main" display="block" sx={{ px: 1.5, py: 1 }}>
+              Scheduler is not answering on 127.0.0.1:6001.
             </Typography>
           )}
           {!error && lines.length === 0 && (
-            <Typography variant="caption" color="text.secondary">
-              {run?.status === 'queued' ? 'Queued. Logs appear when the runner starts.' : 'No log lines.'}
+            <Typography variant="caption" color="text.secondary" display="block" sx={{ px: 1.5, py: 1 }}>
+              {run?.status === 'queued' ? 'Queued. Steps appear when the runner starts.' : 'No log lines.'}
             </Typography>
           )}
-          {lines.map((line, index) => (
-            <Box key={`${runId}-${index}`} sx={{ overflowWrap: 'anywhere', whiteSpace: 'pre-wrap' }}>
-              <AnsiText text={line} />
+          {!error && lines.length > 0 && steps.length === 0 && (
+            <Box ref={scroller} sx={{ px: 1.5, py: 1, fontFamily: mono, fontSize: 12.5, lineHeight: 1.55 }}>
+              {lines.map((line, index) => (
+                <Box key={`${runId}-${index}`} sx={{ overflowWrap: 'anywhere', whiteSpace: 'pre-wrap' }}>
+                  <AnsiText text={line} />
+                </Box>
+              ))}
+            </Box>
+          )}
+          {jobs.map((job) => (
+            <Box key={job.job}>
+              <Box sx={{ display: 'flex', alignItems: 'center', gap: 1, px: 1.5, py: 0.75, borderBottom: '1px solid', borderColor: 'divider', bgcolor: 'action.hover' }}>
+                <StatusChip status={job.status} />
+                <Typography sx={{ fontSize: 13, fontWeight: 600 }} noWrap>{job.job}</Typography>
+              </Box>
+              {job.steps.map((step) => (
+                <Accordion
+                  key={step.id}
+                  disableGutters
+                  elevation={0}
+                  expanded={openStep === step.id}
+                  onChange={(_event, expanded) => {
+                    pickedStep.current = true
+                    setOpenStep(expanded ? step.id : null)
+                  }}
+                  sx={{ '&:before': { display: 'none' }, borderBottom: '1px solid', borderColor: 'divider', bgcolor: 'transparent' }}
+                >
+                  <AccordionSummary sx={{ minHeight: 36, px: 1.5, '& .MuiAccordionSummary-content': { my: 0.5, alignItems: 'center', gap: 1 } }}>
+                    <StatusChip status={step.status} />
+                    <Typography sx={{ fontSize: 13, flex: 1 }} noWrap>{step.name}</Typography>
+                    {step.duration && <Typography variant="caption" color="text.secondary" sx={{ fontVariantNumeric: 'tabular-nums' }}>{step.duration}</Typography>}
+                  </AccordionSummary>
+                  <AccordionDetails ref={openStep === step.id ? scroller : undefined} sx={{ px: 1.5, py: 1, fontFamily: mono, fontSize: 12.5, lineHeight: 1.55, maxHeight: 360, overflow: 'auto' }}>
+                    {step.lines.length === 0 && <Typography variant="caption" color="text.secondary">No output yet.</Typography>}
+                    {step.lines.map((line, index) => (
+                      <Box key={`${step.id}-${index}`} sx={{ overflowWrap: 'anywhere', whiteSpace: 'pre-wrap' }}>
+                        <AnsiText text={line.replace(/^\[[^\]]+\]\s?/, '')} />
+                      </Box>
+                    ))}
+                  </AccordionDetails>
+                </Accordion>
+              ))}
             </Box>
           ))}
         </Box>

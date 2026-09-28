@@ -1,5 +1,10 @@
 import { Board } from './components/Board'
+import { ToastProvider } from './toast'
 
 export function App() {
-  return <Board />
+  return (
+    <ToastProvider>
+      <Board />
+    </ToastProvider>
+  )
 }

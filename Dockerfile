@@ -19,5 +19,5 @@ COPY dashboard/package*.json dashboard/
 RUN npm ci --prefix scheduler && npm ci --prefix dashboard
 COPY . .
 RUN npm run build
-EXPOSE 3001
+EXPOSE 6001
 CMD ["npm", "start", "--prefix", "scheduler"]

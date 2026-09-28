@@ -2,26 +2,24 @@ import { useState } from 'react'
 import { Box, Button, TextField, Typography } from '@mui/material'
 import { useColorMode } from '../color-mode'
 import type { RepoSnapshot } from '../gates'
+import { useToast } from '../toast'
 
 const REMOTE = /^(?:git@[\w.-]+:[\w./~-]+|ssh:\/\/git@[\w.-]+\/[\w./~-]+|https:\/\/[\w.-]+\/[\w./~-]+)(?:\.git)?$/
 
 export function Onboarding({ onSaved, onCancel }: { onSaved: (repository: RepoSnapshot) => void; onCancel?: () => void }) {
   const { mode, toggle } = useColorMode()
-  const [id, setId] = useState('')
   const [name, setName] = useState('')
   const [github, setGithub] = useState('')
   const [error, setError] = useState<string | null>(null)
   const [saving, setSaving] = useState(false)
+  const notify = useToast()
 
   async function save() {
-    const repositoryId = id.trim().toLowerCase()
     const remote = github.trim()
-    if (!/^[a-z0-9][a-z0-9._-]{0,63}$/.test(repositoryId)) {
-      setError('Use a short ID with letters, numbers, dots, underscores, or hyphens.')
-      return
-    }
     if (!REMOTE.test(remote)) {
-      setError('Use a git@, ssh://, or https:// remote')
+      const message = 'Use a git@, ssh://, or https:// remote'
+      setError(message)
+      notify('error', message)
       return
     }
     setSaving(true)
@@ -30,16 +28,20 @@ export function Onboarding({ onSaved, onCancel }: { onSaved: (repository: RepoSn
       const response = await fetch('/api/repositories', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ id: repositoryId, name: name.trim() || repositoryId, github: remote }),
+        body: JSON.stringify({ name: name.trim(), github: remote }),
       })
       const body = (await response.json()) as { error?: string; repository?: RepoSnapshot }
       if (!response.ok || !body.repository) {
-        setError(body.error ?? 'Could not connect the repository')
+        const message = body.error ?? 'Could not connect the repository'
+        setError(message)
+        notify('error', message)
         return
       }
       onSaved(body.repository)
     } catch {
-      setError('Scheduler is not answering on 127.0.0.1:3001.')
+      const message = 'Scheduler is not answering on 127.0.0.1:6001.'
+      setError(message)
+      notify('error', message)
     } finally {
       setSaving(false)
     }
@@ -61,10 +63,8 @@ export function Onboarding({ onSaved, onCancel }: { onSaved: (repository: RepoSn
           <Typography variant="body2" color="text.secondary">
             Local CI creates a bare repository, fetches its branches, and shows the exact `ci` remote path to add to your working copy.
           </Typography>
-          <TextField label="Repository ID" placeholder="my-project" value={id} onChange={(event) => setId(event.target.value)} fullWidth />
-          <TextField label="Display name" placeholder="My Project" value={name} onChange={(event) => setName(event.target.value)} fullWidth />
+          <TextField autoFocus label="Display name" placeholder="My Project" helperText="Optional. The GitHub repository name is used when this is empty." value={name} onChange={(event) => setName(event.target.value)} fullWidth />
           <TextField
-            autoFocus
             label="GitHub remote"
             placeholder="git@github.com:you/my-project.git"
             value={github}
@@ -74,8 +74,8 @@ export function Onboarding({ onSaved, onCancel }: { onSaved: (repository: RepoSn
             helperText={error ?? 'The scheduler host must have Git access to this remote.'}
             fullWidth
           />
-          <Button type="button" variant="contained" disabled={saving || !id.trim() || !github.trim()} onClick={() => void save()}>
-            {saving ? 'Connecting' : 'Connect repository'}
+          <Button type="button" variant="contained" loading={saving} loadingPosition="center" disabled={!github.trim()} onClick={() => void save()}>
+            Connect repository
           </Button>
         </Box>
       </Box>

@@ -5,7 +5,7 @@ if (!repository || !branch) {
   console.error('Usage: ci-wait.mjs <repository> <branch> [head-sha]')
   process.exit(2)
 }
-const base = process.env.LOCAL_CI_URL ?? 'http://127.0.0.1:3001'
+const base = process.env.LOCAL_CI_URL ?? 'http://127.0.0.1:6001'
 const deadline = Date.now() + Number(process.env.LOCAL_CI_WAIT_MINUTES ?? 90) * 60_000
 let last = ''
 while (Date.now() < deadline) {

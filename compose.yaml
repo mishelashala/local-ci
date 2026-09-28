@@ -11,9 +11,9 @@ services:
       LOCAL_CI_ROOT: ${LOCAL_CI_ROOT}
       LOCAL_CI_HOST: 0.0.0.0
       LOCAL_CI_ACT_PLATFORM: ${LOCAL_CI_ACT_PLATFORM:-ubuntu-latest=catthehacker/ubuntu:act-latest}
-      LOCAL_CI_CONTAINER_ARCH: ${LOCAL_CI_CONTAINER_ARCH:-linux/amd64}
+      LOCAL_CI_CONTAINER_ARCH: ${LOCAL_CI_CONTAINER_ARCH:-}
     ports:
-      - 127.0.0.1:3001:3001
+      - 127.0.0.1:6001:6001
     command: ["sh", "-c", "cp -an /app/scheduler/node_modules/. \"$LOCAL_CI_ROOT/scheduler/node_modules/\" && cp -an /app/dashboard/node_modules/. \"$LOCAL_CI_ROOT/dashboard/node_modules/\" && mkdir -p \"$LOCAL_CI_ROOT/dashboard/dist\" && cp -a /app/dashboard/dist/. \"$LOCAL_CI_ROOT/dashboard/dist/\" && node --import ./scheduler/node_modules/tsx/dist/loader.mjs scheduler/src/index.ts"]
 volumes:
   scheduler_modules:
